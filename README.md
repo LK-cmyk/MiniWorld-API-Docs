@@ -3,7 +3,7 @@
 ![MiniWorld_Icon](./img/MiniWorld_Icon.png)
 
 - 作者: K_Lan
-- 声明文件版本: v0.2.2-main.1
+- 声明文件版本: v0.2.2-main.2
 - 支持的游戏版本: v1.52
 - Lua版本: v5.1+
 - 开发套件版本: v3.0
@@ -28,7 +28,7 @@
         - 终端或命令行中，输入以下命令：
 
         ```shell
-        git clone https://github.com/UU-cmyk/MiniWorld-API-Docs.git
+        git clone https://github.com/LK-cmyk/MiniWorld-API-Docs.git
         ```
 
         - 这将下载仓库的所有文件到本地。
@@ -61,7 +61,7 @@
 
     - 将本仓库中的 `./template/lua.code-snippets` 文件，复制到你项目文件夹下的 `.vscode` 目录中即可。
 
-## v0.2.2-main.1 更新内容
+## v0.2.2-main.2 更新内容
 
 1. 由 beta 分支进入 main 分支
 
