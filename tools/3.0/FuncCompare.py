@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.io_utils import init_stdout
 from common.lua_parser import get_function_names
 from common.compare import compare_funcs, build_summary
@@ -122,7 +124,7 @@ def main() -> None:
             only_web_count += 1
 
     common_count = local_count - only_local_count
-    print()
+    logger.info("")
     summary = build_summary(
         "函数对比",
         local_count,
@@ -132,10 +134,10 @@ def main() -> None:
         only_web_count,
     )
     for line in summary:
-        print(line)
-    print()
+        logger.info(line)
+    logger.info("")
     for line in all_diff:
-        print(line)
+        logger.info(line)
 
 
 if __name__ == "__main__":

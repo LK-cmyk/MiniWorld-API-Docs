@@ -6,6 +6,8 @@ from bs4 import BeautifulSoup, Tag
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.io_utils import init_stdout
 from common.lua_parser import get_enum_definitions
 from common.compare import compare_enums, build_summary
@@ -94,7 +96,7 @@ def main() -> None:
     only_local = local_set - web_set
     only_web = web_set - local_set
 
-    print()
+    logger.info("")
     summary = build_summary(
         "枚举对比",
         len(local_set),
@@ -104,10 +106,10 @@ def main() -> None:
         len(only_web),
     )
     for line in summary:
-        print(line)
-    print()
+        logger.info(line)
+    logger.info("")
     for line in diff_lines:
-        print(line)
+        logger.info(line)
 
 
 if __name__ == "__main__":

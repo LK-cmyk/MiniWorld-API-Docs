@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.io_utils import init_stdout
 from common.compare import build_summary
 from common.config import (
@@ -28,7 +30,7 @@ IGNORE_PARAMS = IGNORE_EVENT_PARAMS
 def load_json_events(path: str) -> dict[str, dict]:
     """加载本地 MNEvent.d.json，返回 {事件全名: {desc, event_info}}"""
     if not os.path.exists(path):
-        print(f"本地 JSON 文件不存在: {path}")
+        logger.error(f"本地 JSON 文件不存在: {path}")
         return {}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -41,7 +43,7 @@ def fetch_page(url: str) -> str | None:
         resp.encoding = "utf-8"
         return resp.text
     except Exception as e:
-        print(f"请求失败: {url} -> {e}")
+        logger.error(f"请求失败: {url} -> {e}")
         return None
 
 
@@ -215,19 +217,19 @@ def main() -> None:
         len(only_web_set),
     )
     for line in summary:
-        print(line)
+        logger.info(line)
 
     # 事件名称对比
-    print()
+    logger.info("")
     name_diff = compare_event_names(json_events, web_events)
     for line in name_diff:
-        print(line)
+        logger.info(line)
 
     # 参数对比
-    print()
+    logger.info("")
     param_diff = compare_event_params(json_events, web_events)
     for line in param_diff:
-        print(line)
+        logger.info(line)
 
 
 if __name__ == "__main__":

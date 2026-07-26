@@ -1,5 +1,6 @@
 """对比 2.0 MNEnumLib.d.lua 与 2.0 维基枚举文档的差异"""
 
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,8 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from loguru import logger
 
 from common.io_utils import init_stdout
 from common.lua_parser import get_enum_definitions
@@ -98,16 +101,16 @@ def main() -> None:
     init_stdout()
 
     if not os.path.exists(ENUM_LIB_FILE_PATH):
-        print(f"错误：本地枚举文件不存在: {ENUM_LIB_FILE_PATH}")
+        logger.error(f"本地枚举文件不存在: {ENUM_LIB_FILE_PATH}")
         return
 
-    print(f"分析本地文件: {ENUM_LIB_FILE_PATH}")
+    logger.info(f"分析本地文件: {ENUM_LIB_FILE_PATH}")
     local_enums = get_enum_definitions(ENUM_LIB_FILE_PATH)
-    print(f"  本地共 {len(local_enums)} 个枚举类")
+    logger.info(f"  本地共 {len(local_enums)} 个枚举类")
 
-    print(f"抓取维基页面: {ENUM_LIB_URL}")
+    logger.info(f"抓取维基页面: {ENUM_LIB_URL}")
     web_enums = analyze_web(ENUM_LIB_URL)
-    print(f"  网页共 {len(web_enums)} 个枚举类")
+    logger.info(f"  网页共 {len(web_enums)} 个枚举类")
 
     diff_lines = compare_enums(local_enums, web_enums, skip_classes={"BLOCKID"})
 
@@ -117,7 +120,7 @@ def main() -> None:
     only_local = local_set - web_set
     only_web = web_set - local_set
 
-    print()
+    logger.info("")
     summary = build_summary(
         "枚举对比",
         len(local_enums),
@@ -127,10 +130,10 @@ def main() -> None:
         len(only_web),
     )
     for line in summary:
-        print(line)
-    print()
+        logger.info(line)
+    logger.info("")
     for line in diff_lines:
-        print(line)
+        logger.info(line)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.io_utils import init_stdout
 from common.lua_parser import get_enum_definitions
 from common.compare import build_summary
@@ -39,7 +41,7 @@ def analyze_web(url: str) -> dict[str, list[str]]:
         response.encoding = "utf-8"
         text = response.text
     except Exception as e:
-        print(f"请求失败: {url} -> {e}")
+        logger.error(f"请求失败: {url} -> {e}")
         return out_dict
 
     pattern = re.compile(r"(TriggerEvent|ObjectEvent|CurEventParam)\.([A-Za-z0-9_]+)")
@@ -96,7 +98,7 @@ def compare_events(local: dict[str, list[str]], web: dict[str, list[str]]) -> li
 def main() -> None:
     init_stdout()
     if not Path(LOCAL_FILE_PATH).exists():
-        print(f"本地文件不存在: {LOCAL_FILE_PATH}")
+        logger.error(f"本地文件不存在: {LOCAL_FILE_PATH}")
         return
 
     local = get_enum_definitions(LOCAL_FILE_PATH)
@@ -114,7 +116,7 @@ def main() -> None:
     only_local = local_set - web_set
     only_web = web_set - local_set
 
-    print()
+    logger.info("")
     summary = build_summary(
         "事件对比",
         len(local_set),
@@ -124,12 +126,12 @@ def main() -> None:
         len(only_web),
     )
     for line in summary:
-        print(line)
-    print()
+        logger.info(line)
+    logger.info("")
 
     diff = compare_events(local, web_all)
     for line in diff:
-        print(line)
+        logger.info(line)
 
 
 if __name__ == "__main__":

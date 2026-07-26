@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.io_utils import init_stdout
 from common.lua_parser import get_function_names
 from common.compare import compare_funcs, build_summary
@@ -36,7 +38,7 @@ def analyze_web(url: str) -> set[str]:
         response = requests.get(url, timeout=15)
         response.encoding = "utf-8"
     except Exception as e:
-        print(f"  请求失败: {url} -> {e}")
+        logger.error(f"  请求失败: {url} -> {e}")
         return out_funcs
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -82,7 +84,7 @@ def main() -> None:
     init_stdout()
 
     if not os.path.exists(FUNC_FILES_PATH):
-        print(f"错误：2.0 声明目录不存在: {FUNC_FILES_PATH}")
+        logger.error(f"2.0 声明目录不存在: {FUNC_FILES_PATH}")
         return
 
     all_diff: list[str] = []
@@ -112,7 +114,7 @@ def main() -> None:
                 break
 
         if matched_url:
-            print(f"抓取 {module_name} ...")
+            logger.info(f"抓取 {module_name} ...")
             web_funcs = analyze_web(matched_url)
             local_count += 1
             web_count += 1
@@ -131,7 +133,7 @@ def main() -> None:
         elif web_funcs and not local_funcs:
             only_web_count += 1
 
-    print()
+    logger.info("")
     summary = build_summary(
         "函数对比",
         local_count,
@@ -143,10 +145,10 @@ def main() -> None:
         only_web_count,
     )
     for line in summary:
-        print(line)
-    print()
+        logger.info(line)
+    logger.info("")
     for line in all_diff:
-        print(line)
+        logger.info(line)
 
 
 if __name__ == "__main__":

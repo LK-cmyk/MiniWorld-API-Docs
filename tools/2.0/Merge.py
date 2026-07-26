@@ -5,6 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.merge import merge_lua_files
 from common.config import MULTIPLE_20_DIR, MERGED_20_FILE, ORDER_20
 
@@ -15,7 +17,7 @@ OUTPUT_FILE = str(MERGED_20_FILE)
 def main() -> None:
     """主函数"""
     if not MULTIPLE_20_DIR.exists():
-        print(f"错误：文件夹 '{INPUT_DIR}' 不存在")
+        logger.error(f"文件夹 '{INPUT_DIR}' 不存在")
         return
 
     merge_lua_files(INPUT_DIR, OUTPUT_FILE, ORDER_20)

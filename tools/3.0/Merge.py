@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from loguru import logger
+
 from common.merge import merge_lua_files
 from common.config import MULTIPLE_30_DIR, MERGED_30_FILE, ORDER_30
 
@@ -40,7 +42,7 @@ ORDER_DEFINITION: list[str] = [  # 自定义顺序定义
 def main():
     """主函数"""
     if not MULTIPLE_30_DIR.exists():
-        print(f"错误：文件夹 '{FOLDER_PATH}' 不存在")
+        logger.error(f"文件夹 '{FOLDER_PATH}' 不存在")
         return
     merge_lua_files(FOLDER_PATH, OUTPUT_FILE, ORDER_DEFINITION)
 
