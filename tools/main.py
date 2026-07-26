@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """MiniWorld API 差异查看主程序
 
-提供统一的 CLI 入口，支持查看 2.0/3.0 的函数、枚举、事件差异
-以及执行合并、转 AI 描述等操作
+提供统一的 CLI 入口，所有输出统一由本模块处理。
+各版本模块仅负责数据采集，编排逻辑在 common.runner 中。
 
 用法
     python tools/main.py compare func --version 2.0
@@ -17,12 +17,9 @@
 
 from __future__ import annotations
 
-import contextlib
-import importlib.util
 import sys
-import types  # 新增: 用于模块类型注解
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -32,19 +29,21 @@ from rich.table import Table
 from typer.core import TyperGroup
 
 from common.io_utils import init_stdout, logger
+from common.models import CompareResult, DescResult, MergeResult
+from common.runner import (
+    COMPARE_TYPES,
+    VERSIONS,
+    run_desc,
+    run_enum_compare,
+    run_event_compare,
+    run_func_compare,
+    run_merge,
+)
 
 _TOOLS_DIR: Path = Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
-# 配置常量
-VERSIONS: list[str] = ["2.0", "3.0"]
-COMPARE_TYPES: list[str] = ["func", "enum", "event"]
-MODULE_MAP: dict[str, str] = {
-    "func": "FuncCompare",
-    "enum": "EnumLibCompare",
-    "event": "EventCompare",
-}
 EXAMPLES_TEXT: str = """\
 python tools/main.py compare func --version 2.0
 python tools/main.py compare enum --version 3.0
@@ -56,7 +55,9 @@ python tools/main.py desc --version 3.0
 python tools/main.py all
 python tools/main.py list"""
 
-console: Console = Console(highlight=False)  # Rich 控制台
+console: Console = Console(highlight=False)
+
+SEP: str = "─" * 60
 
 
 def validate_choice(value: str, allowed: list[str], label: str) -> None:
@@ -67,94 +68,87 @@ def validate_choice(value: str, allowed: list[str], label: str) -> None:
         raise typer.Exit(1)
 
 
-def load_module(version: str, module_name: str) -> Optional[types.ModuleType]:
-    """加载 tools/{version}/{module_name}.py 并返回模块对象"""
-    filepath: Path = _TOOLS_DIR / version / f"{module_name}.py"
-    if not filepath.is_file():
-        console.print(f"[red]✗[/] 错误: 文件不存在: {filepath}")
-        return None
-
-    spec = importlib.util.spec_from_file_location(f"{version}.{module_name}", str(filepath))
-    if spec is None or spec.loader is None:
-        console.print(f"[red]✗[/] 错误: 无法加载模块: {filepath}")
-        return None
-
-    module = importlib.util.module_from_spec(spec)
-    with _temporary_sys_path(str(_TOOLS_DIR)):
-        try:
-            spec.loader.exec_module(module)
-        except Exception as exc:
-            console.print(f"[red]✗[/] 加载模块失败 {filepath}: {exc}")
-            return None
-    return module
-
-
-def _run_module_main(version: str, module_name: str) -> int:
-    """加载模块并执行其 main() 函数，返回 0 表示成功，1 表示失败"""
-    module = load_module(version, module_name)
-    if module is None:
-        return 1
-    if not hasattr(module, "main"):
-        console.print(f"[red]✗[/] 错误: 模块 {version}/{module_name}.py 缺少 main() 函数")
-        return 1
-    try:
-        module.main()
-        return 0
-    except Exception as exc:
-        console.print(f"[red]✗[/] 执行 {version}/{module_name}.py 时出错: {exc}")
-        return 1
-
-
-@contextlib.contextmanager
-def _temporary_sys_path(extra_path: str) -> Generator[None, None, None]:
-    """临时将 extra_path 加入 sys.path 的上下文管理器"""
-    inserted: bool = False
-    if extra_path not in sys.path:
-        sys.path.insert(0, extra_path)
-        inserted = True
-    try:
-        yield
-    finally:
-        if inserted:
-            sys.path.remove(extra_path)
-
-
-def run_with_tee(module: types.ModuleType, output_path: Optional[Path] = None) -> int:
-    """运行模块的 main()，可选择同时输出到文件
-
-    禁用模块内部的 init_stdout() 以避免 loguru 重复配置
-    """
-    original_init = getattr(module, "init_stdout", None)
-    module.init_stdout = lambda: None  # type: ignore[attr-defined]
-
-    sink_id: int | None = None
-    try:
-        if output_path is not None:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            sink_id = logger.add(
-                str(output_path),
-                format="{message}",
-                level="TRACE",
-                encoding="utf-8",
-            )
-        module.main()
-        return 0
-    except Exception as exc:
-        console.print(f"[red]✗ 错误: {exc}[/]")
-        return 1
-    finally:
-        if sink_id is not None:
-            logger.remove(sink_id)
-        if original_init is not None:
-            module.init_stdout = original_init  # type: ignore[attr-defined]
-
-
 def print_section_header(title: str) -> None:
     """打印 rich 风格的章节标题"""
     console.print()
     console.print(Rule(style="cyan"))
     console.print(Panel(title, style="bold cyan", expand=False))
     console.print(Rule(style="cyan"))
+
+
+def _format_compare_result(result: CompareResult) -> None:
+    """格式化输出 CompareResult"""
+    s = result.summary
+    console.print(SEP)
+    console.print(f"  {s.title}")
+    console.print(SEP)
+    console.print(f"  本地:     {s.local_count:>4}")
+    console.print(f"  网页:     {s.web_count:>4}")
+    console.print(f"  共同:     {s.common_count:>4}")
+    console.print(f"  仅本地:   {s.only_local_count:>4}")
+    console.print(f"  仅网页:   {s.only_web_count:>4}")
+    console.print(SEP)
+    if result.details:
+        console.print("")
+        for line in result.details:
+            console.print(line)
+
+
+def _format_merge_result(result: MergeResult) -> None:
+    """格式化输出 MergeResult"""
+    if result.success:
+        console.print(f"[green]✓[/] 合并完成！输出: [bold]{result.output_file}[/]")
+    else:
+        console.print(f"[red]✗[/] 合并失败: {result.error}")
+
+
+def _format_desc_result(result: DescResult) -> None:
+    """格式化输出 DescResult"""
+    if result.success:
+        console.print(f"[green]✓[/] 转换完成！")
+        console.print(f"  输入: {result.input_file}")
+        console.print(f"  输出: {result.output_file}")
+    else:
+        console.print(f"[red]✗[/] 转换失败: {result.error}")
+
+
+def _write_to_file(content: str, output_path: Path) -> None:
+    """追加内容到输出文件"""
+    with open(output_path, "a", encoding="utf-8") as fp:
+        fp.write(content)
+
+
+def _run_compare_and_format(
+    label: str,
+    runner_func,
+    version: str,
+    output_path: Optional[Path] = None,
+) -> int:
+    """统一运行对比函数并格式化/输出结果"""
+    title: str = f"[{version}] {label}"
+    plain_title: str = f"\n{'=' * 70}\n  {title}\n{'=' * 70}\n"
+
+    print_section_header(title)
+
+    result: Optional[CompareResult] = runner_func(version)
+    if result is None:
+        console.print(f"[red]✗[/] {title} 执行失败（模块加载或数据缺失）")
+        if output_path:
+            _write_to_file(f"{plain_title}\n  执行失败\n", output_path)
+        return 1
+
+    # 控制台输出
+    _format_compare_result(result)
+
+    # 文件输出
+    if output_path:
+        s = result.summary
+        text = f"{plain_title}" f"{SEP}\n" f"  {s.title}\n" f"{SEP}\n" f"  本地:     {s.local_count:>4}\n" f"  网页:     {s.web_count:>4}\n" f"  共同:     {s.common_count:>4}\n" f"  仅本地:   {s.only_local_count:>4}\n" f"  仅网页:   {s.only_web_count:>4}\n" f"{SEP}\n"
+        if result.details:
+            text += "\n" + "\n".join(result.details) + "\n"
+        _write_to_file(text, output_path)
+
+    return 0
 
 
 def run_compare(
@@ -168,28 +162,22 @@ def run_compare(
     output_path: Optional[Path] = Path(output_file) if output_file else None
 
     exit_code: int = 0
-    # 如果输出到文件，先清空（覆盖写入）而非追加，避免重复内容
+
+    # 如果输出到文件，先清空
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("", encoding="utf-8")
 
+    runner_map = {
+        "func": ("函数对比", run_func_compare),
+        "enum": ("枚举对比", run_enum_compare),
+        "event": ("事件对比", run_event_compare),
+    }
+
     for ver in versions:
         for ctype in types:
-            module_name = MODULE_MAP[ctype]
-            module = load_module(ver, module_name)
-            if module is None:
-                exit_code = 1
-                continue
-
-            title: str = f"[{ver}] {ctype.upper()} 对比"
-            plain_title: str = f"\n{'=' * 70}\n  {title}\n{'=' * 70}\n"
-
-            if output_path:
-                with open(output_path, "a", encoding="utf-8") as fp:
-                    fp.write(plain_title)
-
-            print_section_header(title)
-            ret: int = run_with_tee(module, output_path)
+            label, runner_func = runner_map[ctype]
+            ret = _run_compare_and_format(label, runner_func, ver, output_path)
             if ret != 0:
                 exit_code = 1
 
@@ -198,16 +186,20 @@ def run_compare(
     return exit_code
 
 
-def run_merge(version: str) -> int:
+def run_merge_cmd(version: str) -> int:
     """合并 multiple 目录下的声明文件"""
     print_section_header(f"合并 {version} 声明文件")
-    return _run_module_main(version, "Merge")
+    result: MergeResult = run_merge(version)
+    _format_merge_result(result)
+    return 0 if result.success else 1
 
 
-def run_desc(version: str) -> int:
+def run_desc_cmd(version: str) -> int:
     """将合并后的声明转为 AI 描述文件"""
     print_section_header(f"{version} 转 AI 描述文件")
-    return _run_module_main(version, "DescToAiDesc")
+    result: DescResult = run_desc(version)
+    _format_desc_result(result)
+    return 0 if result.success else 1
 
 
 def run_list() -> None:
@@ -316,7 +308,7 @@ def merge(
 ) -> None:
     """合并 multiple 目录下的声明文件"""
     validate_choice(version, VERSIONS, "版本")
-    raise typer.Exit(run_merge(version))
+    raise typer.Exit(run_merge_cmd(version))
 
 
 @app.command()
@@ -330,7 +322,7 @@ def desc(
 ) -> None:
     """将合并后的声明转为 AI 描述文件"""
     validate_choice(version, VERSIONS, "版本")
-    raise typer.Exit(run_desc(version))
+    raise typer.Exit(run_desc_cmd(version))
 
 
 @app.command("all")

@@ -1,7 +1,6 @@
 """合并 multiple 目录下的 .d.lua 文件为单个声明文件"""
 
 import os
-from loguru import logger
 
 
 def get_ordered_files(folder_path: str, order_definition: list[str]) -> list[str]:
@@ -31,9 +30,7 @@ def get_ordered_files(folder_path: str, order_definition: list[str]) -> list[str
     return ordered_files
 
 
-def merge_lua_files(
-    folder_path: str, output_file: str, order_definition: list[str]
-) -> None:
+def merge_lua_files(folder_path: str, output_file: str, order_definition: list[str]) -> None:
     """合并多个 .lua 文件
 
     Args:
@@ -44,7 +41,6 @@ def merge_lua_files(
     ordered_files: list[str] = get_ordered_files(folder_path, order_definition)
 
     if not ordered_files:
-        logger.error(f"在 '{folder_path}' 中未找到任何 .lua 文件")
         return
 
     merged_parts: list[str] = []
@@ -65,18 +61,9 @@ def merge_lua_files(
                     merged_parts.append("\n")
                 merged_parts.append(content)
 
-        except Exception as e:
-            logger.error(f"处理文件 {filename} 时出错 - {e}")
+        except Exception:
+            pass
 
-    try:
-        result: str = "".join(merged_parts)
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(result)
-
-        logger.info(
-            f"合并完成！合并了 {len(ordered_files)} 个文件，总 {total_lines} 行"
-        )
-        logger.info(f"输出文件：{output_file}")
-
-    except Exception as e:
-        logger.error(f"写入输出文件时出错 - {e}")
+    result: str = "".join(merged_parts)
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(result)
