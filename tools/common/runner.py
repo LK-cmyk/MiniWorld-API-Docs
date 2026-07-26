@@ -15,6 +15,8 @@ from common.config import (
     API_20_FILE,
     API_30_FILE,
     COORD_PARAMS,
+    FUNC_SKIP_FUNCS_20,
+    FUNC_SKIP_MODULES_20,
     IGNORE_EVENT_PARAMS,
     MERGED_20_FILE,
     MERGED_30_FILE,
@@ -82,8 +84,18 @@ def run_func_compare(version: str) -> Optional[CompareResult]:
 
         for filename in local_files:
             module_name: str = _func_name_20(filename)
+
+            # 跳过完全禁止对比的模块
+            if module_name in FUNC_SKIP_MODULES_20:
+                continue
+
             local_path: str = os.path.join(_FUNC_PATH_20, filename)
             local_funcs: set[str] = get_function_names(local_path)
+
+            # 移除需要跳过的特定函数
+            skip_funcs = FUNC_SKIP_FUNCS_20.get(module_name, set())
+            if skip_funcs:
+                local_funcs -= skip_funcs
 
             web_funcs: set[str] = set()
             matched_url: str | None = None

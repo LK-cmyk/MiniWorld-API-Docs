@@ -4615,14 +4615,14 @@ _G.Spawnport = Spawnport
 --- number x 坐标
 --- number y 坐标
 --- number z 坐标
-function Spawnport:GetSpawnPoint() return 0, 0, 0, 0 end
+function Spawnport:getSpawnPoint() return 0, 0, 0, 0 end
 
 --- 设置出生点位置
 --- x number x 坐标
 --- y number y 坐标
 --- z number z 坐标
 --- number 成功返回 ErrorCode.OK
-function Spawnport:SetSpawnPoint(x, y, z) return 0 end
+function Spawnport:setSpawnPoint(x, y, z) return 0 end
 
 --- 获取区块有效刷新点，可作为出生点
 --- x number 区块 x 坐标
@@ -4632,7 +4632,7 @@ function Spawnport:SetSpawnPoint(x, y, z) return 0 end
 --- number x 坐标
 --- number y 坐标
 --- number z 坐标
-function Spawnport:GetChunkValidSpawnPos(x, y, z) return 0, 0, 0, 0 end
+function Spawnport:getChunkValidSpawnPos(x, y, z) return 0, 0, 0, 0 end
 --- MapMark
 --- 小地图接口 MapMark
 local MapMark = {}

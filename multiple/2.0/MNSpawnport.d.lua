@@ -8,14 +8,14 @@ _G.Spawnport = Spawnport
 --- @return number @x 坐标
 --- @return number @y 坐标
 --- @return number @z 坐标
-function Spawnport:GetSpawnPoint() return 0, 0, 0, 0 end
+function Spawnport:getSpawnPoint() return 0, 0, 0, 0 end
 
 --- 设置出生点位置
 --- @param x number @x 坐标
 --- @param y number @y 坐标
 --- @param z number @z 坐标
 --- @return number @成功返回 ErrorCode.OK
-function Spawnport:SetSpawnPoint(x, y, z) return 0 end
+function Spawnport:setSpawnPoint(x, y, z) return 0 end
 
 --- 获取区块有效刷新点，可作为出生点
 --- @param x number @区块 x 坐标
@@ -25,4 +25,4 @@ function Spawnport:SetSpawnPoint(x, y, z) return 0 end
 --- @return number @x 坐标
 --- @return number @y 坐标
 --- @return number @z 坐标
-function Spawnport:GetChunkValidSpawnPos(x, y, z) return 0, 0, 0, 0 end
+function Spawnport:getChunkValidSpawnPos(x, y, z) return 0, 0, 0, 0 end

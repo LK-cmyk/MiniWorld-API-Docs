@@ -168,9 +168,7 @@ ENUM_URL_30: str = "https://dev-wiki.mini1.cn/ugc-wiki/apis/global.html"
 
 EVENT_URL_20: str = "https://dev-wiki.mini1.cn/wiki/673b36173ffc6baf0859d391"
 TRIGGER_EVENT_URL_30: str = "https://dev-wiki.mini1.cn/ugc-wiki/apis/triggerevent.html"
-COMPONENT_EVENT_URL_30: str = (
-    "https://dev-wiki.mini1.cn/ugc-wiki/apis/componentevent.html"
-)
+COMPONENT_EVENT_URL_30: str = "https://dev-wiki.mini1.cn/ugc-wiki/apis/componentevent.html"
 
 
 # 过滤规则 / 忽略集合
@@ -213,5 +211,13 @@ MINI_FIELDS_30: set[str] = {
     "Item",
 }
 
-# 3.0 函数标题过滤（跳过模块名等非函数标题）
+# 3.0 函数标题过滤
 FUNC_TITLE_FILTER_30: set[str] = {"World", "GameObject"}
+
+# 2.0 函数对比中完全跳过不报告的模块
+FUNC_SKIP_MODULES_20: set[str] = {"EnumLib"}
+
+# 2.0 函数对比中跳过特定模块的指定函数
+FUNC_SKIP_FUNCS_20: dict[str, set[str]] = {
+    "Valuegroup": {"clearNoValueByName"},
+}

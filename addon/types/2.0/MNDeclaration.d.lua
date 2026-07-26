@@ -564,6 +564,20 @@ _G.MiniShopPage = MiniShopPage
 --- @field STOP number @停止
 local QQMUSICOP = {}
 _G.QQMUSICOP = QQMUSICOP
+
+--- @class CurEventParam
+--- @field EventDate EventDate
+
+--- @class EventDate
+--- @field time number @时间戳
+--- @field year number @年
+--- @field month number @月
+--- @field day number @日
+--- @field hour number @小时
+--- @field minute number @分钟
+--- @field second number @秒
+local CurEventParam = {}
+_G.CurEventParam = CurEventParam
 --- @class Game
 --- 游戏模块管理接口 Game
 local Game = {}
@@ -4601,14 +4615,14 @@ _G.Spawnport = Spawnport
 --- @return number @x 坐标
 --- @return number @y 坐标
 --- @return number @z 坐标
-function Spawnport:GetSpawnPoint() return 0, 0, 0, 0 end
+function Spawnport:getSpawnPoint() return 0, 0, 0, 0 end
 
 --- 设置出生点位置
 --- @param x number @x 坐标
 --- @param y number @y 坐标
 --- @param z number @z 坐标
 --- @return number @成功返回 ErrorCode.OK
-function Spawnport:SetSpawnPoint(x, y, z) return 0 end
+function Spawnport:setSpawnPoint(x, y, z) return 0 end
 
 --- 获取区块有效刷新点，可作为出生点
 --- @param x number @区块 x 坐标
@@ -4618,7 +4632,7 @@ function Spawnport:SetSpawnPoint(x, y, z) return 0 end
 --- @return number @x 坐标
 --- @return number @y 坐标
 --- @return number @z 坐标
-function Spawnport:GetChunkValidSpawnPos(x, y, z) return 0, 0, 0, 0 end
+function Spawnport:getChunkValidSpawnPos(x, y, z) return 0, 0, 0, 0 end
 --- @class MapMark
 --- 小地图接口 MapMark
 local MapMark = {}
