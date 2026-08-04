@@ -1,4 +1,8 @@
+<div align="center">
+
 # MiniWorld-API-Desc
+
+《迷你世界》UGC Lua 开发的 API 声明库、代码补全插件与辅助工具集。
 
 ![GitHub stars](https://img.shields.io/github/stars/LK-cmyk/MiniWorld-API-Desc?style=flat)
 ![GitHub forks](https://img.shields.io/github/forks/LK-cmyk/MiniWorld-API-Desc?style=flat)
@@ -11,8 +15,7 @@
 ![UGC 2.0](https://img.shields.io/badge/UGC-2.0-blue)
 
 [![English Version README](https://img.shields.io/badge/English-README-blue?logo=markdown)](./README.en.md)
-
-《迷你世界》UGC Lua 开发的 API 声明库、代码补全插件与辅助工具集。
+</div>
 
 > **不再推荐使用声明文件来进行声明，推荐使用声明插件。**  
 > 安装本扩展后，通过 `Ctrl+Shift+P` 执行相应命令即可自动配置声明路径，无需手动操作。

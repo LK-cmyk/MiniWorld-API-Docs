@@ -1,4 +1,8 @@
+<div align="center">
+
 # MiniWorld-API-Desc
+
+API declaration library, code completion plugin, and auxiliary toolset for MiniWorld UGC Lua development.
 
 ![GitHub stars](https://img.shields.io/github/stars/LK-cmyk/MiniWorld-API-Desc?style=flat)
 ![GitHub forks](https://img.shields.io/github/forks/LK-cmyk/MiniWorld-API-Desc?style=flat)
@@ -11,8 +15,7 @@
 ![UGC 2.0](https://img.shields.io/badge/UGC-2.0-blue)
 
 [![Chinese Version README](https://img.shields.io/badge/Chinese-README-blue?logo=markdown)](./README.md)
-
-API declaration library, code completion plugin, and auxiliary toolset for MiniWorld UGC Lua development.
+</div>
 
 > **No longer recommended to use declaration files for declarations, declaration plugins are recommended.**  
 > After installing this extension, you can automatically configure declaration paths by executing corresponding commands via `Ctrl+Shift+P`, no manual operation required.
