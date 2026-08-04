@@ -22,6 +22,8 @@ pack.ps1
 # 依赖
 node_modules/
 .venv/
+.python-version
+pyproject.toml
 uv.lock
 
 # 文档
