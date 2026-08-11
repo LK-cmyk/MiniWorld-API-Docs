@@ -72,7 +72,11 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint addon/src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "install:worker": "cd server && npm install",
+    "build:worker": "cd server && npm run build",
+    "deploy:worker": "cd server && wrangler deploy",
+    "dev:worker": "cd server && wrangler dev"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -81,7 +85,7 @@
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
-    "eslint": "^10.5.0",
+    "eslint": "^10.8.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
   },

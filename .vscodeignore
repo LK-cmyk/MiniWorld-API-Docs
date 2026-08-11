@@ -40,4 +40,5 @@ README.en.md
 __pycache__/
 tools/
 out/
+server/
 .github/

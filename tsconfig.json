@@ -8,11 +8,17 @@
         ],
         "types": [
             "node",
-            "mocha",
+            "mocha"
         ],
         "sourceMap": true,
         "rootDir": "addon/src",
         "strict": true,
-        "esModuleInterop": true,
-    }
+        "esModuleInterop": true
+    },
+    "include": [
+        "addon/src/**/*"
+    ],
+    "exclude": [
+        "server"
+    ]
 }

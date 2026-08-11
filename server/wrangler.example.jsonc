@@ -1,0 +1,24 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "server",
+	"main": "src/index.ts",
+	"kv_namespaces": [
+		{
+			"binding": "DESC_DATA",
+			"id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+		}
+	],
+	"compatibility_date": "2026-08-05",
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"triggers": {
+		"crons": [
+			"0 3 * * *"
+		]
+	}
+}
