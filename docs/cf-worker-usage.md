@@ -32,7 +32,7 @@ npm install
 - `admin_email_change_code`：待验证的管理员邮箱变更验证码（6 位数字，变更成功后自动清除）
 - `admin_email_change_code_time`：验证码生成时间，用于过期判断和发送频控
 - `cors_origin`：可选，CORS 允许的来源，默认 `*`（如需限定可设为如 `https://panel.example.com`）
-- `data:{type}:{data}`：上传的 JSON 数据，键名格式示例：`data:item:123`
+- `data:{type}:{type}_map`：上传的 JSON 数据，键名格式示例：`data:item:item_map`
 
 ### 2.1 创建 KV 命名空间
 
@@ -74,7 +74,6 @@ https://your-worker.your-subdomain.workers.dev
 - 失败时返回对应的 4xx/5xx 状态码，响应体为 `{"error": "错误描述"}`
 - 写接口（`change-admin-email`、`change-from-email`、`upload-id`）按客户端滑动窗口限流：优先按客户端 IP（`CF-Connecting-IP`，回退 `x-forwarded-for`），IP 不可用时退化为按 token；邮箱变更类接口每 60 秒最多 5 次，上传接口每 60 秒最多 60 次，超出返回 `429`
 - 请求体大小限制为 16MB，超出返回 `413`
-- `data` 标识长度不得超过 200 字节且不能包含控制字符，超出返回 `400`
 - 所有接口均返回 CORS 响应头；预检 `OPTIONS` 请求返回 `204`，允许来源默认为 `*`，可通过 KV 键 `cors_origin` 配置
 - 写操作会输出结构化审计日志（含事件类型、时间、IP 等字段），可在 Cloudflare Workers Logs / `wrangler tail` 中追溯
 - 状态码含义：
@@ -268,7 +267,6 @@ Content-Type: application/json
 {
   "token": "your-token",
   "type": "item",
-  "data": "123",
   "payload": {
     "name": "demo",
     "version": 1
@@ -280,9 +278,8 @@ Content-Type: application/json
 
 - `type` 支持 `item`、`buff`、`actor`
 - 上传内容会被压缩为最小化 JSON 并保存到 KV
-- 保存键名格式为 `data:{type}:{data}`
+- 保存键名格式为 `data:{type}:{type}_map`
 - `payload` 序列化后的字节数不得超过 8MB，超出返回 `413`
-- `data` 标识长度不得超过 200 字节且不能包含控制字符，超出返回 `400`
 - 成功上传后，当前 token 仍然有效，可在轮换周期内继续使用
 
 参数说明：
@@ -291,7 +288,6 @@ Content-Type: application/json
 | --- | --- | --- | --- |
 | `token` | string | 是 | 当前有效 token |
 | `type` | string | 是 | 数据类型，`item`、`buff`、`actor` 三选一；也可通过 URL 查询参数 `?type=` 提供 |
-| `data` | string | 是 | 数据唯一标识，会作为 KV 键名的一部分；长度不超过 200 字节且不含控制字符 |
 | `payload` | object | 是 | 要保存的数据，须为可被 JSON 序列化的对象 |
 
 成功响应：
@@ -299,7 +295,7 @@ Content-Type: application/json
 ```json
 {
   "success": true,
-  "message": "item 123 saved"
+  "message": "item item_map saved"
 }
 ```
 
@@ -308,7 +304,7 @@ Content-Type: application/json
 请求：
 
 ```http
-GET /api/download?type=item&data=123
+GET /api/download?type=item
 ```
 
 查询参数说明：
@@ -316,7 +312,6 @@ GET /api/download?type=item&data=123
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | string | 是 | 数据类型，`item`、`buff`、`actor` 三选一 |
-| `data` | string | 是 | 数据唯一标识，对应上传时的 `data`；长度不超过 200 字节且不含控制字符 |
 
 响应：
 
@@ -326,7 +321,7 @@ GET /api/download?type=item&data=123
 
 ```json
 {
-  "error": "item 123 not found"
+  "error": "item item_map not found"
 }
 ```
 
@@ -370,7 +365,6 @@ curl -X POST https://your-worker.your-subdomain.workers.dev/api/upload-id \
   -d '{
     "token": "your-token",
     "type": "item",
-    "data": "123",
     "payload": {"name":"demo"}
   }'
 ```
@@ -378,7 +372,7 @@ curl -X POST https://your-worker.your-subdomain.workers.dev/api/upload-id \
 ### 6.3 下载数据
 
 ```bash
-curl https://your-worker.your-subdomain.workers.dev/api/download?type=item&data=123
+curl https://your-worker.your-subdomain.workers.dev/api/download?type=item
 ```
 
 ## 7. 常见问题

@@ -10,6 +10,8 @@ import json
 import os
 from typing import Optional
 
+import requests
+
 from common.compare import build_summary, compare_enums, compare_funcs
 from common.config import (
     API_20_FILE,
@@ -26,11 +28,15 @@ from common.config import (
     ORDER_20,
     ORDER_30,
     SKIP_ENUM_CLASSES_20,
+    WORKER_BASE_URL,
+    WORKER_TOKEN,
+    WORKER_UPLOAD_ROUTE,
+    WORKER_UPLOAD_TYPES,
 )
 from common.lua_parser import get_enum_definitions, get_function_names
 from common.merge import merge_lua_files
 from common.annotation import strip_annotations
-from common.models import CompareResult, DescResult, MergeResult, Summary
+from common.models import CompareResult, DescResult, MergeResult, Summary, UploadResult
 from common.parsers_20 import (
     ENUM_LIB_FILE_PATH as _ENUM_FILE_20,
     ENUM_LIB_URL as _ENUM_URL_20,
@@ -422,3 +428,86 @@ def run_desc(version: str) -> DescResult:
             output_file=str(output_file),
             error=str(e),
         )
+
+
+def run_upload(
+    kind: str,
+    file_path: str,
+    base_url: str = "",
+    token: str = "",
+) -> UploadResult:
+    """将 JSON 文件内容作为 payload 上传到 Cloudflare Worker
+
+    数据唯一标识固定为 type + "_map"，由 Worker 端派生，无需调用方指定。
+    参数可由调用方显式传入，缺省时回退到 config.ini 的 worker 段配置。
+    """
+    data_id = f"{kind}_map"
+    base = (base_url or WORKER_BASE_URL).strip().rstrip("/")
+    tok = token or WORKER_TOKEN
+
+    # 未显式给出协议时，默认补 https://
+    if base and not base.startswith(("http://", "https://")):
+        base = "https://" + base
+
+    if not base:
+        return UploadResult(
+            success=False,
+            kind=kind,
+            data=data_id,
+            error="未配置 Worker 地址（--url 或 config.ini 的 worker 段 base_url）",
+        )
+    if not tok:
+        return UploadResult(
+            success=False,
+            kind=kind,
+            data=data_id,
+            error="未配置 token（--token 或 config.ini 的 worker 段 token）",
+        )
+    if kind not in WORKER_UPLOAD_TYPES:
+        return UploadResult(
+            success=False,
+            kind=kind,
+            data=data_id,
+            error=f"type 必须是 {', '.join(WORKER_UPLOAD_TYPES)} 之一",
+        )
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except FileNotFoundError:
+        return UploadResult(success=False, kind=kind, data=data_id, error=f"文件不存在: {file_path}")
+    except json.JSONDecodeError as e:
+        return UploadResult(success=False, kind=kind, data=data_id, error=f"JSON 解析失败: {e}")
+
+    url = f"{base}{WORKER_UPLOAD_ROUTE}"
+    body = {"token": tok, "type": kind, "payload": payload}
+
+    try:
+        resp = requests.post(url, json=body, timeout=30)
+    except requests.RequestException as e:
+        return UploadResult(success=False, kind=kind, data=data_id, url=url, error=f"请求失败: {e}")
+
+    try:
+        resp_json = resp.json()
+    except Exception:
+        resp_json = {}
+
+    if resp.status_code == 200:
+        return UploadResult(
+            success=True,
+            kind=kind,
+            data=data_id,
+            url=url,
+            status_code=resp.status_code,
+            message=str(resp_json.get("message", "")),
+        )
+
+    return UploadResult(
+        success=False,
+        kind=kind,
+        data=data_id,
+        url=url,
+        status_code=resp.status_code,
+        message=str(resp_json.get("error", "")),
+        error=str(resp_json.get("error") or resp.text),
+    )

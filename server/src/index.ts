@@ -15,7 +15,6 @@ const ADMIN_CHANGE_CODE_RATE_LIMIT_MS = 60 * 1000;
 const ADMIN_CHANGE_CODE_TTL_MS = 10 * 60 * 1000;
 const PAYLOAD_MAX_BYTES = 8 * 1024 * 1024; // 上传 payload 大小上限 8MB
 const REQUEST_BODY_MAX_BYTES = 16 * 1024 * 1024; // 请求体大小上限 16MB
-const DATA_MAX_BYTES = 200; // data 标识长度上限（字节），保证 KV 键远低于 512 字节上限
 
 interface RateLimitRule {
 	windowMs: number;
@@ -381,20 +380,18 @@ async function handleUpload(request: Request, env: Env, url: URL): Promise<Respo
 
 	const token = String(body.token ?? '');
 	const kind = String(body.type ?? url.searchParams.get('type') ?? '').toLowerCase();
-	const data = String(body.data ?? '');
 	const payload = body.payload;
 
-	if (!token || !kind || !data || payload === undefined) {
-		return jsonResponse({ error: 'token, type, data and payload are required' }, 400);
+	if (!token || !kind || payload === undefined) {
+		return jsonResponse({ error: 'token, type and payload are required' }, 400);
 	}
 
 	if (!isValidKind(kind)) {
 		return jsonResponse({ error: 'type must be one of item, buff or actor' }, 400);
 	}
 
-	if (!isValidDataId(data)) {
-		return jsonResponse({ error: 'data must not exceed 200 bytes and must not contain control characters' }, 400);
-	}
+	// 数据唯一标识固定为 type + "_map"
+	const data = dataIdForKind(kind);
 
 	const tokenHash = await getStoredTokenHash(env);
 	if (!tokenHash) {
@@ -435,20 +432,17 @@ async function handleUpload(request: Request, env: Env, url: URL): Promise<Respo
 
 async function handleDownload(request: Request, env: Env, url: URL): Promise<Response> {
 	const kind = String(url.searchParams.get('type') ?? '').toLowerCase();
-	const data = String(url.searchParams.get('data') ?? '');
 
-	if (!kind || !data) {
-		return jsonResponse({ error: 'type and data query parameters are required' }, 400);
+	if (!kind) {
+		return jsonResponse({ error: 'type query parameter is required' }, 400);
 	}
 
 	if (!isValidKind(kind)) {
 		return jsonResponse({ error: 'type must be one of item, buff or actor' }, 400);
 	}
 
-	if (!isValidDataId(data)) {
-		return jsonResponse({ error: 'data must not exceed 200 bytes and must not contain control characters' }, 400);
-	}
-
+	// 数据唯一标识固定为 type + "_map"
+	const data = dataIdForKind(kind);
 	const key = `data:${kind}:${data}`;
 	const stored = await env.DESC_DATA.get(key);
 	if (!stored) {
@@ -463,6 +457,11 @@ async function handleDownload(request: Request, env: Env, url: URL): Promise<Res
 
 function isValidKind(kind: string): kind is 'item' | 'buff' | 'actor' {
 	return kind === 'item' || kind === 'buff' || kind === 'actor';
+}
+
+// 上传数据的唯一标识：type + "_map"（每种类型对应一个键）
+function dataIdForKind(kind: string): string {
+	return `${kind}_map`;
 }
 
 type JsonBodyResult = { ok: true; body: any } | { ok: false; tooLarge: boolean };
@@ -626,15 +625,6 @@ function corsHeaders(origin: string): Record<string, string> {
 // 审计日志：输出结构化 JSON，可在 Cloudflare Workers Logs / wrangler tail 中追溯写操作
 function auditLog(event: string, details: Record<string, unknown> = {}): void {
 	console.log(JSON.stringify({ audit: true, t: new Date().toISOString(), event, ...details }));
-}
-
-function isValidDataId(data: string): boolean {
-	// 限制长度，确保 KV 键总长远低于 512 字节上限
-	if (new TextEncoder().encode(data).byteLength > DATA_MAX_BYTES) {
-		return false;
-	}
-	// 禁止控制字符，避免异常键
-	return !/[\u0000-\u001F\u007F]/.test(data);
 }
 
 // 预定处理程序：通过 cron 触发器每天运行，在满足时间间隔时轮换令牌

@@ -4,6 +4,7 @@
 所有路径基于 PROJECT_ROOT 计算，避免各脚本各自拼接导致不一致。
 """
 
+import configparser
 from pathlib import Path
 
 # 项目根目录（基于本文件位置计算）
@@ -221,3 +222,11 @@ FUNC_SKIP_MODULES_20: set[str] = {"EnumLib"}
 FUNC_SKIP_FUNCS_20: dict[str, set[str]] = {
     "Valuegroup": {"clearNoValueByName"},
 }
+
+_CFG: configparser.ConfigParser = configparser.ConfigParser()
+_CFG.read(PROJECT_ROOT / "config.ini", encoding="utf-8")
+
+WORKER_BASE_URL: str = _CFG.get("worker", "base_url", fallback="").strip().rstrip("/")
+WORKER_TOKEN: str = _CFG.get("worker", "token", fallback="").strip()
+WORKER_UPLOAD_ROUTE: str = "/api/upload-id"
+WORKER_UPLOAD_TYPES: list[str] = ["item", "buff", "actor"]

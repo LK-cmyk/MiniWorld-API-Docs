@@ -13,6 +13,7 @@
     python tools/main.py desc --version 3.0
     python tools/main.py all
     python tools/main.py list
+    python tools/main.py upload --type item --file out/data.json
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from rich.table import Table
 from typer.core import TyperGroup
 
 from common.io_utils import init_stdout, logger
-from common.models import CompareResult, DescResult, MergeResult
+from common.models import CompareResult, DescResult, MergeResult, UploadResult
 from common.runner import (
     COMPARE_TYPES,
     VERSIONS,
@@ -38,6 +39,7 @@ from common.runner import (
     run_event_compare,
     run_func_compare,
     run_merge,
+    run_upload,
 )
 
 _TOOLS_DIR: Path = Path(__file__).resolve().parent
@@ -53,7 +55,8 @@ python tools/main.py compare all --output report.txt
 python tools/main.py merge --version 2.0
 python tools/main.py desc --version 3.0
 python tools/main.py all
-python tools/main.py list"""
+python tools/main.py list
+python tools/main.py upload --type item --file out/data.json"""
 
 console: Console = Console(highlight=False)
 
@@ -110,6 +113,22 @@ def _format_desc_result(result: DescResult) -> None:
         console.print(f"  输出: {result.output_file}")
     else:
         console.print(f"[red]✗[/] 转换失败: {result.error}")
+
+
+def _format_upload_result(result: UploadResult) -> None:
+    """格式化输出 UploadResult"""
+    if result.success:
+        console.print("[green]✓[/] 上传成功！")
+        console.print(f"  类型: {result.kind} / 标识: {result.data}")
+        console.print(f"  地址: {result.url}")
+        if result.message:
+            console.print(f"  服务端: {result.message}")
+    else:
+        console.print(f"[red]✗[/] 上传失败: {result.error or result.message or '未知错误'}")
+        if result.status_code:
+            console.print(f"  HTTP {result.status_code}")
+        if result.url:
+            console.print(f"  地址: {result.url}")
 
 
 def _write_to_file(content: str, output_path: Path) -> None:
@@ -202,6 +221,19 @@ def run_desc_cmd(version: str) -> int:
     return 0 if result.success else 1
 
 
+def run_upload_cmd(
+    kind: str,
+    file: str,
+    url: str = "",
+    token: str = "",
+) -> int:
+    """将 JSON 文件上传到 Worker"""
+    print_section_header("上传 JSON 数据到 Worker")
+    result: UploadResult = run_upload(kind, file, url, token)
+    _format_upload_result(result)
+    return 0 if result.success else 1
+
+
 def run_list() -> None:
     """列出所有可用操作"""
     table: Table = Table(
@@ -230,6 +262,9 @@ def run_list() -> None:
 
     table.add_row("批量", "all", "批量运行所有对比")
     table.add_row("", "all --output report.txt", "输出到文件")
+    table.add_row("", "", "")
+
+    table.add_row("上传", "upload --type item --file out/data.json", "上传 JSON 数据到 Worker")
 
     panel: Panel = Panel(
         table,
@@ -336,6 +371,35 @@ def all_cmd(
 ) -> None:
     """批量运行所有版本的差异对比"""
     raise typer.Exit(run_all(output))
+
+
+@app.command()
+def upload(
+    kind: str = typer.Option(
+        ...,
+        "--type",
+        "-t",
+        help="数据类型（item/buff/actor）",
+    ),
+    file: str = typer.Option(
+        ...,
+        "--file",
+        "-f",
+        help="要上传的 JSON 文件路径",
+    ),
+    url: str = typer.Option(
+        "",
+        "--url",
+        help="Worker 根地址（默认读取 config.ini 的 worker 段 base_url）",
+    ),
+    token: str = typer.Option(
+        "",
+        "--token",
+        help="上传 token（默认读取 config.ini 的 worker 段 token）",
+    ),
+) -> None:
+    """将 JSON 数据上传到 Cloudflare Worker"""
+    raise typer.Exit(run_upload_cmd(kind, file, url, token))
 
 
 @app.command("list")

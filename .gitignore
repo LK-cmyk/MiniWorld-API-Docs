@@ -24,6 +24,7 @@ build/
 # Cloudflare Worker
 .wrangler/
 .dev.vars
+config.ini
 .env
 .env.local
 .env.*.local

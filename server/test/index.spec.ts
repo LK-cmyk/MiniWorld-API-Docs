@@ -265,7 +265,7 @@ describe("security hardening", () => {
 		expect(optionsResponse.headers.get("Access-Control-Allow-Origin")).toBe("*");
 		expect(optionsResponse.headers.get("Access-Control-Allow-Methods")).toContain("POST");
 
-		const download = new Request("http://example.com/api/download?type=item&data=123");
+		const download = new Request("http://example.com/api/download?type=item");
 		const downloadResponse = await worker.fetch(download, envStub, createExecutionContext());
 		expect(downloadResponse.status).toBe(404);
 		expect(downloadResponse.headers.get("Access-Control-Allow-Origin")).toBe("*");
@@ -280,40 +280,6 @@ describe("security hardening", () => {
 		const response = await worker.fetch(options, envStub, createExecutionContext());
 		expect(response.status).toBe(204);
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://panel.example.com");
-	});
-
-	it("rejects uploads whose data id is too long", async () => {
-		const kv = new FakeKV();
-		const token = "data-len-token";
-		await kv.put("token_hash", await sha256Hex(token));
-		await kv.put("token_replace_time", "2026-01-01T00:00:00.000Z");
-
-		const envStub = { DESC_DATA: kv } as any;
-		const longData = "x".repeat(201);
-		const request = new Request("http://example.com/api/upload-id", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ token, type: "item", data: longData, payload: { a: 1 } }),
-		});
-		const response = await worker.fetch(request, envStub, createExecutionContext());
-		expect(response.status).toBe(400);
-		expect(await kv.get(`data:item:${longData}`)).toBeNull();
-	});
-
-	it("rejects uploads whose data id contains control characters", async () => {
-		const kv = new FakeKV();
-		const token = "data-ctrl-token";
-		await kv.put("token_hash", await sha256Hex(token));
-		await kv.put("token_replace_time", "2026-01-01T00:00:00.000Z");
-
-		const envStub = { DESC_DATA: kv } as any;
-		const request = new Request("http://example.com/api/upload-id", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ token, type: "item", data: "bad\nkey", payload: { a: 1 } }),
-		});
-		const response = await worker.fetch(request, envStub, createExecutionContext());
-		expect(response.status).toBe(400);
 	});
 
 	it("rejects requests whose body exceeds the 16MB limit", async () => {
@@ -336,7 +302,7 @@ describe("security hardening", () => {
 });
 
 describe("upload/download data key", () => {
-	it("stores data under data:{type}:{data} key and downloads it back", async () => {
+	it("stores data under data:{type}:{type}_map key and downloads it back by type", async () => {
 		const kv = new FakeKV();
 		const token = "key-test-token";
 		const tokenHash = await sha256Hex(token);
@@ -350,17 +316,16 @@ describe("upload/download data key", () => {
 			body: JSON.stringify({
 				token,
 				type: "item",
-				data: "123",
 				payload: { name: "demo", version: 1 },
 			}),
 		});
 		const uploadResponse = await worker.fetch(upload, envStub, createExecutionContext());
 		expect(uploadResponse.status).toBe(200);
 
-		expect(await kv.get("data:item:123")).toBe('{"name":"demo","version":1}');
-		expect(await kv.get("data:item:123.json")).toBeNull();
+		expect(await kv.get("data:item:item_map")).toBe('{"name":"demo","version":1}');
+		expect(await kv.get("data:item:item_map.json")).toBeNull();
 
-		const download = new Request("http://example.com/api/download?type=item&data=123");
+		const download = new Request("http://example.com/api/download?type=item");
 		const downloadResponse = await worker.fetch(download, envStub, createExecutionContext());
 		expect(downloadResponse.status).toBe(200);
 		expect(await downloadResponse.text()).toBe('{"name":"demo","version":1}');
@@ -385,7 +350,7 @@ describe("upload/download data key", () => {
 		});
 		const response = await worker.fetch(request, envStub, createExecutionContext());
 		expect(response.status).toBe(413);
-		expect(await kv.get("data:item:too-big")).toBeNull();
+		expect(await kv.get("data:item:item_map")).toBeNull();
 	});
 
 	it("allows a payload just under the 8MB limit", async () => {
@@ -407,6 +372,6 @@ describe("upload/download data key", () => {
 		});
 		const response = await worker.fetch(request, envStub, createExecutionContext());
 		expect(response.status).toBe(200);
-		expect(await kv.get("data:actor:ok-size")).not.toBeNull();
+		expect(await kv.get("data:actor:actor_map")).not.toBeNull();
 	});
 });

@@ -48,3 +48,16 @@ class DescResult:
     input_file: str = ""
     output_file: str = ""
     error: Optional[str] = None
+
+
+@dataclass
+class UploadResult:
+    """上传 JSON 数据到 Worker 的结果"""
+
+    success: bool
+    kind: str = ""
+    data: str = ""
+    url: str = ""
+    status_code: int = 0
+    message: str = ""
+    error: Optional[str] = None
