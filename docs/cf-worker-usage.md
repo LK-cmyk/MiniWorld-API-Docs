@@ -72,7 +72,7 @@ https://your-worker.your-subdomain.workers.dev
 
 - 除下载接口外，成功时返回 HTTP `200`，响应体为 `{"success": true, "message": "..."}`
 - 失败时返回对应的 4xx/5xx 状态码，响应体为 `{"error": "错误描述"}`
-- 写接口（`change-admin-email`、`change-from-email`、`upload`）按客户端滑动窗口限流：优先按客户端 IP（`CF-Connecting-IP`，回退 `x-forwarded-for`），IP 不可用时退化为按 token；邮箱变更类接口每 60 秒最多 5 次，上传接口每 60 秒最多 60 次，超出返回 `429`
+- 写接口（`change-admin-email`、`change-from-email`、`upload-id`）按客户端滑动窗口限流：优先按客户端 IP（`CF-Connecting-IP`，回退 `x-forwarded-for`），IP 不可用时退化为按 token；邮箱变更类接口每 60 秒最多 5 次，上传接口每 60 秒最多 60 次，超出返回 `429`
 - 请求体大小限制为 16MB，超出返回 `413`
 - `data` 标识长度不得超过 200 字节且不能包含控制字符，超出返回 `400`
 - 所有接口均返回 CORS 响应头；预检 `OPTIONS` 请求返回 `204`，允许来源默认为 `*`，可通过 KV 键 `cors_origin` 配置
@@ -258,7 +258,7 @@ Content-Type: application/json
 请求：
 
 ```http
-POST /api/upload
+POST /api/upload-id
 Content-Type: application/json
 ```
 
@@ -365,7 +365,7 @@ curl -X POST https://your-worker.your-subdomain.workers.dev/api/generate-reset-h
 ### 6.2 上传数据
 
 ```bash
-curl -X POST https://your-worker.your-subdomain.workers.dev/api/upload \
+curl -X POST https://your-worker.your-subdomain.workers.dev/api/upload-id \
   -H "Content-Type: application/json" \
   -d '{
     "token": "your-token",
