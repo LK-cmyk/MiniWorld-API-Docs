@@ -2,13 +2,9 @@
 
 import re
 
-ANNOTATION_TAG_RE: re.Pattern[str] = re.compile(
-    r"^([ \t]*---[ \t]*)@\w+\b[ \t]*", re.MULTILINE
-)
+ANNOTATION_TAG_RE: re.Pattern[str] = re.compile(r"^([ \t]*---[ \t]*)@\w+\b[ \t]*", re.MULTILINE)
 REMOVE_AT_SIGN_RE: re.Pattern[str] = re.compile(r"^[ \t]*---.*$", re.MULTILINE)
-EMPTY_COMMENT_LINE_RE: re.Pattern[str] = re.compile(
-    r"^[ \t]*---[ \t]*\r?\n", re.MULTILINE
-)
+EMPTY_COMMENT_LINE_RE: re.Pattern[str] = re.compile(r"^[ \t]*---[ \t]*\r?\n", re.MULTILINE)
 
 
 def strip_annotations(content: str) -> str:

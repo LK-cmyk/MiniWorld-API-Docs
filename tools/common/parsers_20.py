@@ -22,7 +22,7 @@ from common.config import (
     WEB_FILTER_BLACKLIST_20,
 )
 
-# ── FuncCompare ──────────────────────────────────
+# FuncCompare
 
 FUNC_URLS: dict[str, str] = FUNC_URLS_20
 FUNC_FILES_PATH: str = str(MULTIPLE_20_DIR)
@@ -31,12 +31,9 @@ WEB_FILTER_BLACKLIST: set[str] = WEB_FILTER_BLACKLIST_20
 
 def func_analyze_web(url: str) -> set[str]:
     """从 2.0 网页 API 文档中提取函数名
-
-    从表格第二列和标题中提取函数名。
-
+    从表格第二列和标题中提取函数名
     Args:
         url: 文档页面 URL
-
     Returns:
         函数名集合
     """
@@ -49,7 +46,7 @@ def func_analyze_web(url: str) -> set[str]:
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # 方法1：从表格中提取函数名
+    # 从表格中提取函数名
     for table in soup.find_all("table"):
         for row in table.find_all("tr"):
             cells = row.find_all("td")
@@ -61,7 +58,7 @@ def func_analyze_web(url: str) -> set[str]:
                     if re.fullmatch(r"[A-Za-z_]\w*", func_name):
                         out_funcs.add(func_name)
 
-    # 方法2：从标题（h2/h3/h4）中提取函数名
+    # 从标题（h2/h3/h4）中提取函数名
     for heading in soup.find_all(["h2", "h3", "h4"]):
         text = heading.get_text(strip=True)
         text = re.sub(r"[\u200b\u200c\u200d\ufeff]+", "", text)
@@ -85,7 +82,7 @@ def func_module_name_from_file(filename: str) -> str:
     return base.replace("MN", "", 1) if base.startswith("MN") else base
 
 
-# ── EnumLibCompare ───────────────────────────────
+# EnumLibCompare
 
 ENUM_LIB_URL: str = ENUM_URL_20
 ENUM_LIB_FILE_PATH: str = str(MULTIPLE_20_DIR / "MNEnumLib.d.lua")
@@ -97,10 +94,8 @@ def enum_analyze_web(url: str) -> dict[str, list[str]]:
 
     维基页面中的枚举表格格式为：名称 | 数值 | 用法描述
     名称列格式为: ClassName.FieldName
-
     Args:
         url: 维基页面 URL
-
     Returns:
         {本地类名: [字段名列表]}
     """
@@ -167,7 +162,7 @@ def enum_analyze_web(url: str) -> dict[str, list[str]]:
     return out_dict
 
 
-# ── EventCompare ─────────────────────────────────
+# EventCompare
 
 EVENT_URL: str = EVENT_URL_20
 JSON_PATH: str = str(MULTIPLE_20_DIR / "MNEvent.d.json")

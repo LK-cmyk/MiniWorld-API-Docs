@@ -5,9 +5,7 @@ import logging
 from pathlib import Path
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # 路径配置
 BASE_DIR = Path(__file__).resolve().parent
@@ -88,9 +86,7 @@ def compile_typescript() -> None:
 
     if result.returncode != 0:
         error_msg = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"esbuild 编译失败 (返回码 {result.returncode}):\n{error_msg}"
-        )
+        raise RuntimeError(f"esbuild 编译失败 (返回码 {result.returncode}):\n{error_msg}")
 
     logging.info("esbuild 编译完成 → %s", ADDON_OUT_FILE)
     if result.stderr.strip():
@@ -125,9 +121,7 @@ def addon() -> None:
 
     if result.returncode != 0:
         error_msg = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"PowerShell 执行失败 (返回码 {result.returncode}):\n{error_msg}"
-        )
+        raise RuntimeError(f"PowerShell 执行失败 (返回码 {result.returncode}):\n{error_msg}")
 
     logging.info("PowerShell 脚本执行成功，输出:\n%s", result.stdout)
 

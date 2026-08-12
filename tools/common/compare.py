@@ -15,28 +15,22 @@ SEP: str = "─" * 60
 def _fmt_set(items: list[str]) -> str:
     """将列表格式化为带计数的逗号分隔字符串"""
     count = len(items)
-    return (
-        f"({count}): {', '.join(items)}"
-        if count <= 10
-        else f"({count}): {', '.join(items[:5])} ... 等 {count} 项"
-    )
+    return f"({count}): {', '.join(items)}" if count <= 10 else f"({count}): {', '.join(items[:5])} ... 等 {count} 项"
 
 
-def _wrap(
-    items: list[str], label_local: str = "本地", label_web: str = "网页"
-) -> list[str]:
+def _wrap(items: list[list[str]], label_local: str = "本地", label_web: str = "网页") -> list[str]:
     """生成统一格式的差异行"""
     lines: list[str] = []
     if items[0]:
-        lines.append(f"  仅在{label_local} {_fmt_set(items[0])}")
+        local_list = list(items[0]) if not isinstance(items[0], list) else items[0]
+        lines.append(f"  仅在{label_local} {_fmt_set(local_list)}")
     if items[1]:
-        lines.append(f"  仅在{label_web} {_fmt_set(items[1])}")
+        web_list = list(items[1]) if not isinstance(items[1], list) else items[1]
+        lines.append(f"  仅在{label_web} {_fmt_set(web_list)}")
     return lines
 
 
-def compare_funcs(
-    local_funcs: set[str], web_funcs: set[str], module_name: str
-) -> list[str]:
+def compare_funcs(local_funcs: set[str], web_funcs: set[str], module_name: str) -> list[str]:
     """比较本地和网页函数名，返回差异描述行
 
     Args:

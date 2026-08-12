@@ -7,12 +7,11 @@ def get_ordered_files(folder_path: str, order_definition: list[str]) -> list[str
     """获取指定顺序的文件列表
 
     按 order_definition 的顺序排列 .lua 文件，
-    未在定义中的文件按字母顺序追加到末尾。
+    未在定义中的文件按字母顺序追加到末尾
 
     Args:
         folder_path: 文件夹路径
         order_definition: 自定义顺序定义（模块名列表，不含 .d.lua 后缀）
-
     Returns:
         有序文件列表
     """

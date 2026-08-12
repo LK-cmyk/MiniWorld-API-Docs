@@ -1,7 +1,7 @@
 """统一执行器：编排所有操作，返回结构化结果（不直接输出）
 
 各版本专用解析函数在 common/parsers_20.py 和 common/parsers_30.py 中，
-由此模块直接导入并编排流程。
+由此模块直接导入并编排流程
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ VERSIONS: list[str] = ["2.0", "3.0"]
 COMPARE_TYPES: list[str] = ["func", "enum", "event"]
 
 
-# ── FuncCompare ──────────────────────────────────────────────
+# FuncCompare
 
 
 def run_func_compare(version: str) -> Optional[CompareResult]:
@@ -160,7 +160,7 @@ def run_func_compare(version: str) -> Optional[CompareResult]:
     return CompareResult(summary=summary, details=all_diff)
 
 
-# ── EnumLibCompare ───────────────────────────────────────────
+# EnumLibCompare ───────────────────────────────────────────
 
 
 def run_enum_compare(version: str) -> Optional[CompareResult]:
@@ -212,7 +212,7 @@ def run_enum_compare(version: str) -> Optional[CompareResult]:
     return CompareResult(summary=summary, details=diff_lines)
 
 
-# ── EventCompare ─────────────────────────────────────────────
+# EventCompare
 
 
 def _compare_event_names(json_events: dict[str, dict], web_events: dict[str, dict]) -> list[str]:
@@ -359,7 +359,7 @@ def run_event_compare(version: str) -> Optional[CompareResult]:
         return CompareResult(summary=summary, details=diff)
 
 
-# ── Merge ────────────────────────────────────────────────────
+# Merge
 
 
 def run_merge(version: str) -> MergeResult:
@@ -391,7 +391,7 @@ def run_merge(version: str) -> MergeResult:
         )
 
 
-# ── DescToAiDesc ─────────────────────────────────────────────
+# DescToAiDesc
 
 
 def run_desc(version: str) -> DescResult:

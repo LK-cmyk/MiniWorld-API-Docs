@@ -13,11 +13,10 @@ def get_function_names(path: str) -> set[str]:
     """从本地 Lua 声明文件中提取函数名
 
     支持 `function Module.func` 和 `function Module:method` 两种格式，
-    对于方法调用 (`:`)，只提取方法名部分。
+    对于方法调用 (`:`)，只提取方法名部分
 
     Args:
         path: 本地文件路径
-
     Returns:
         函数名集合
     """

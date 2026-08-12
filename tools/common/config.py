@@ -1,7 +1,7 @@
 """项目全局配置常量
 
-集中管理所有路径、URL、顺序定义和过滤规则。
-所有路径基于 PROJECT_ROOT 计算，避免各脚本各自拼接导致不一致。
+集中管理所有路径、URL、顺序定义和过滤规则
+所有路径基于 PROJECT_ROOT 计算，避免各脚本各自拼接导致不一致
 """
 
 import configparser
@@ -219,9 +219,7 @@ FUNC_TITLE_FILTER_30: set[str] = {"World", "GameObject"}
 FUNC_SKIP_MODULES_20: set[str] = {"EnumLib"}
 
 # 2.0 函数对比中跳过特定模块的指定函数
-FUNC_SKIP_FUNCS_20: dict[str, set[str]] = {
-    "Valuegroup": {"clearNoValueByName"},
-}
+FUNC_SKIP_FUNCS_20: dict[str, set[str]] = {"Valuegroup": {"clearNoValueByName"}}
 
 _CFG: configparser.ConfigParser = configparser.ConfigParser()
 _CFG.read(PROJECT_ROOT / "config.ini", encoding="utf-8")

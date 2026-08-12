@@ -22,7 +22,7 @@ from common.config import (
     TRIGGER_EVENT_URL_30,
 )
 
-# ── FuncCompare ──────────────────────────────────
+# FuncCompare
 
 FUNC_URL_START: str = FUNC_URL_30_PREFIX
 FUNC_URL: list[str] = FUNC_URL_30_LIST
@@ -98,7 +98,7 @@ def func_local_file_for_module(module_name: str) -> str:
     return os.path.join(FUNC_FILES_PATH, f"MN{module_name}.d.lua")
 
 
-# ── EnumLibCompare ───────────────────────────────
+# EnumLibCompare
 
 ENUM_LIB_URL: str = ENUM_URL_30
 ENUM_LIB_FILE_PATH: str = str(MULTIPLE_30_DIR / "MNEnumLib.d.lua")
@@ -162,7 +162,7 @@ def enum_analyze_web(url: str) -> dict[str, list[str]]:
     return out_dict
 
 
-# ── EventCompare ─────────────────────────────────
+# EventCompare
 
 TRIGGER_EVENT_URL: str = TRIGGER_EVENT_URL_30
 COMPONENT_EVENT_URL: str = COMPONENT_EVENT_URL_30
@@ -173,11 +173,10 @@ IGNORE_WEB_FIELDS: set[str] = IGNORE_EVENT_PARAMS
 def event_analyze_web(url: str) -> dict[str, list[str]]:
     """从指定 URL 的网页内容中提取事件定义
 
-    在页面文本中查找 TriggerEvent/ObjectEvent/CurEventParam 的事件名。
+    在页面文本中查找 TriggerEvent/ObjectEvent/CurEventParam 的事件名
 
     Args:
         url: 网页 URL
-
     Returns:
         {类名: [字段名列表]}
     """
@@ -210,7 +209,6 @@ def compare_events(local: dict[str, list[str]], web: dict[str, list[str]]) -> li
     Args:
         local: 本地事件定义 {类名: [字段名列表]}
         web: 网页事件定义 {类名: [字段名列表]}
-
     Returns:
         差异描述列表
     """
