@@ -12,9 +12,21 @@ export type EventDefinition = {
 // 事件补全数据异步加载状态
 let eventDefinitionsReady = false;
 let eventDefinitions: Map<string, EventDefinition> = new Map();
+/** 缓存的 CompletionItem 数组：仅在 eventDefinitions 重新加载时重建，
+ *  避免每次按键都重新构造所有 CompletionItem（含 MarkdownString 文档）。
+ *  VS Code 会基于 item.filterText 在客户端做模糊过滤，无需手动 filter。 */
+let cachedCompletionItems: vscode.CompletionItem[] | null = null;
 
 function getEventDefinitionsFile(context: vscode.ExtensionContext): string {
     return context.asAbsolutePath(EVENT_DEFINITIONS_FILE);
+}
+
+/** 获取（必要时构建）缓存的 CompletionItem 数组 */
+function getCachedCompletionItems(): vscode.CompletionItem[] {
+    if (!cachedCompletionItems) {
+        cachedCompletionItems = buildEventCompletionItems(eventDefinitions);
+    }
+    return cachedCompletionItems;
 }
 
 export async function parseEventDefinitions(filePath: string): Promise<Map<string, EventDefinition>> {
@@ -84,6 +96,8 @@ export function registerEventCompletion(context: vscode.ExtensionContext): vscod
     // 异步加载事件定义，不阻塞激活
     parseEventDefinitions(eventDefinitionsFile).then(defs => {
         eventDefinitions = defs;
+        // 数据更新后使 CompletionItem 缓存失效，下次调用时重建
+        cachedCompletionItems = null;
         eventDefinitionsReady = true;
     });
 
@@ -102,9 +116,11 @@ export function registerEventCompletion(context: vscode.ExtensionContext): vscod
                     if (!eventDefinitionsReady) {
                         return [];
                     }
-                    const items = buildEventCompletionItems(eventDefinitions);
-
-                    return items.filter((item) => item.label.toString().toLowerCase().startsWith(prefix.toLowerCase()));
+                    // 返回缓存的 CompletionItem 数组（仅在首次或数据更新时构建），
+                    // 由 VS Code 基于 filterText 做原生模糊过滤，无需手动 filter。
+                    // 用 CompletionList(isIncomplete:false) 让 VS Code 缓存该结果，
+                    // 用户继续输入时不会重新触发 provider（除非触发字符 . 出现）。
+                    return new vscode.CompletionList(getCachedCompletionItems(), false);
                 },
             },
             '.'

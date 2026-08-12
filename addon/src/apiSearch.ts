@@ -61,6 +61,29 @@ const ID_CACHE_TTL_MS = 10 * 24 * 60 * 60 * 1000;
 /** ID 数据在 Worker 上的下载类型（分类） */
 const ID_DOWNLOAD_TYPES: IdCategory[] = ['item', 'actor', 'buff'];
 
+// 模块级正则常量 —— 避免在热路径中重复创建 RegExp 对象
+// 解析 .d.lua 文件
+const RE_CLASS_LINE = /^---\s*@class (\w+)\s*@?(.*)$/;
+const RE_FIELD_LINE = /^---\s*@field (\w+)\s+(\w+)(?:\s*@([\s\S]*))?$/;
+const RE_OTHER_ANNOTATION = /^---\s*@/;
+const RE_FUNC_LINE = /(?:function\s+(?:(\w+):)?(\w+)\s*\(|(\w+)\s*=\s*function\s*\()/;
+const RE_PARAM_FULL = /^---\s*@param (\w+)\s+(\w+(?:\s*\|\s*\w+)*)\s*@(.+)$/;
+const RE_PARAM_SIMPLE = /^---\s*@param (\w+)\s+(\w+(?:\s*\|\s*\w+)*)$/;
+const RE_RETURN_FULL = /^---\s*@return (\w+(?:\s*,\s*\w+)*)\s*@(.+)$/;
+const RE_RETURN_SIMPLE = /^---\s*@return (\w+(?:\s*,\s*\w+)*)$/;
+const RE_DESC_LINE = /^--- (.+)$/;
+
+// 模块级常量集合 —— 避免每次搜索都新建 Set
+const EXCLUDED_MODULES = new Set(['Event', 'EnumLib']);
+const HIDDEN_EVENT_PARENTS = new Set(['TriggerEvent', 'CurEventParam', 'ObjectEvent']);
+/** 共享的只读空数组 —— 避免每个展开条目都分配新的空数组 */
+const EMPTY_PARAMS: readonly ApiParam[] = Object.freeze([]);
+const EMPTY_RETURNS: readonly ApiReturn[] = Object.freeze([]);
+const EMPTY_FIELDS: readonly ApiField[] = Object.freeze([]);
+
+/** Fuse 实例缓存上限（LRU） */
+const FUSE_CACHE_MAX = 6;
+
 // 解析器
 
 /**
@@ -108,7 +131,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
     const isEventFile = baseName === 'MNEvent.d.lua';
     let i = 0;
     while (i < lines.length) {
-        const classMatch = lines[i].match(/^---\s*@class (\w+)\s*@?(.*)$/);
+        const classMatch = lines[i].match(RE_CLASS_LINE);
         if (classMatch) {
             const enumName = classMatch[1];
             const classDesc = classMatch[2].trim();
@@ -116,7 +139,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
             // 收集 @class 下方的 @field 行
             let j = i + 1;
             while (j < lines.length) {
-                const fieldMatch = lines[j].match(/^---\s*@field (\w+)\s+(\w+)(?:\s*@([\s\S]*))?$/);
+                const fieldMatch = lines[j].match(RE_FIELD_LINE);
                 if (fieldMatch) {
                     const rawDesc = fieldMatch[3] ? fieldMatch[3].trim() : '';
                     if (isEventFile) {
@@ -135,7 +158,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                         });
                     }
                     j++;
-                } else if (/^---\s*@/.test(lines[j].trim())) {
+                } else if (RE_OTHER_ANNOTATION.test(lines[j].trim())) {
                     // 其他注解，跳过
                     j++;
                 } else {
@@ -169,15 +192,14 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
     //   1. function ClassName:methodName(params) return ... end
     //   2. local funcName = function(params) return ... end
     //   3. function funcName(params) return ... end
-    const funcRegex = /(?:function\s+(?:(\w+):)?(\w+)\s*\(|(\w+)\s*=\s*function\s*\()/;
     i = 0;
     while (i < lines.length) {
         const line = lines[i];
-        const funcMatch = line.match(funcRegex);
+        const funcMatch = line.match(RE_FUNC_LINE);
         if (funcMatch) {
             const className = funcMatch[1]; // 类名（如 Player: 中的 Player），可能为 undefined
             const funcName = funcMatch[2] || funcMatch[3];
-            if (!funcName || funcName === 'function') {continue;}
+            if (!funcName || funcName === 'function') { i++; continue; }
 
             let description = '';
             const params: ApiParam[] = [];
@@ -189,7 +211,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                 const commentLine = lines[j].trim();
 
                 // @param name type @desc
-                const paramMatch = commentLine.match(/^---\s*@param (\w+)\s+(\w+(?:\s*\|\s*\w+)*)\s*@(.+)$/);
+                const paramMatch = commentLine.match(RE_PARAM_FULL);
                 if (paramMatch) {
                     params.unshift({
                         name: paramMatch[1],
@@ -201,7 +223,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                 }
 
                 // @param name type  (无描述)
-                const paramSimple = commentLine.match(/^---\s*@param (\w+)\s+(\w+(?:\s*\|\s*\w+)*)$/);
+                const paramSimple = commentLine.match(RE_PARAM_SIMPLE);
                 if (paramSimple) {
                     params.unshift({
                         name: paramSimple[1],
@@ -213,7 +235,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                 }
 
                 // @return type @desc
-                const returnMatch = commentLine.match(/^---\s*@return (\w+(?:\s*,\s*\w+)*)\s*@(.+)$/);
+                const returnMatch = commentLine.match(RE_RETURN_FULL);
                 if (returnMatch) {
                     returns.unshift({
                         type: returnMatch[1],
@@ -224,7 +246,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                 }
 
                 // @return type  (无描述)
-                const returnSimple = commentLine.match(/^---\s*@return (\w+(?:\s*,\s*\w+)*)$/);
+                const returnSimple = commentLine.match(RE_RETURN_SIMPLE);
                 if (returnSimple) {
                     returns.unshift({ type: returnSimple[1], desc: '' });
                     j--;
@@ -232,7 +254,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                 }
 
                 // 纯描述行（累积为完整 Markdown，从下往上遍历故向前插入）
-                const descMatch = commentLine.match(/^--- (.+)$/);
+                const descMatch = commentLine.match(RE_DESC_LINE);
                 if (descMatch && !descMatch[1].startsWith('@') && !descMatch[1].startsWith('class ')) {
                     const descLine = descMatch[1].trim();
                     description = descLine + (description ? '\n' + description : '');
@@ -278,7 +300,7 @@ async function scanAllApis(multipleDir: string): Promise<ApiItem[]> {
             const filePath = path.join(dir, file);
             try {
                 const items = await parseLuaDeclarations(filePath, version);
-                all.push(...items);
+                for (const it of items) { all.push(it); }
             } catch (err) {
                 console.warn(`解析失败: ${filePath}`, err);
             }
@@ -289,7 +311,7 @@ async function scanAllApis(multipleDir: string): Promise<ApiItem[]> {
         try {
             await fs.promises.access(jsonEventPath);
             const items = await parseJsonEvents(jsonEventPath, version);
-            all.push(...items);
+            for (const it of items) { all.push(it); }
         } catch (err) {
             // ENOENT 表示文件不存在（3.0 目录），这不是错误，静默跳过
             if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -469,11 +491,27 @@ function buildEventDetailFields(fields: ApiField[]): ApiField[] {
 
 // 模糊搜索（基于 fuse.js）
 
-/** Fuse 实例缓存 key = items 引用 + filter 组合，仅在过滤条件或数据源变化时重建索引 */
-const _fuseCache = new Map<string, { fuse: Fuse<ApiItem>; itemsRef: ApiItem[] }>();
+/** 单个搜索结果条目（展开 + 精简后的字段） */
+interface ExpandedItem {
+    name: string;
+    kind: string;
+    module: string;
+    version: string;
+    description: string;
+    paramCount: number;
+    returnCount: number;
+    fieldCount: number;
+    sourceFile: string;
+    sourceLine: number;
+    parameters: ApiParam[];
+    returns: ApiReturn[];
+    fields: ApiField[];
+    displayName?: string;
+}
 
 /**
  * 使用 fuse.js 进行模糊搜索，支持多字段加权匹配
+ * 注意：调用方负责传入已筛选的 items（已应用 version/module/kind 过滤）
  */
 function searchItems(
     items: ApiItem[],
@@ -481,7 +519,8 @@ function searchItems(
     versionFilter: string,
     moduleFilter: string,
     kindFilter: string,
-): { results: ApiItem[]; totalCount: number } {
+    fuseCache: Map<string, { fuse: Fuse<ApiItem>; itemsRef: ApiItem[] }>,
+): { results: ApiItem[]; filtered: ApiItem[] } {
     let filtered = items;
 
     // 版本/模块/类型筛选
@@ -500,12 +539,12 @@ function searchItems(
         filtered.sort((a, b) => {
             const verA = a.version === '3.0' ? 0 : 1;
             const verB = b.version === '3.0' ? 0 : 1;
-            if (verA !== verB) {return verA - verB;}
+            if (verA !== verB) { return verA - verB; }
             const modCmp = a.module.localeCompare(b.module);
-            if (modCmp !== 0) {return modCmp;}
+            if (modCmp !== 0) { return modCmp; }
             return a.name.localeCompare(b.name);
         });
-        return { results: filtered, totalCount: filtered.length };
+        return { results: filtered, filtered };
     }
 
     // 文本搜索：剥离尾部括号 ()（），如 getPos() → getPos
@@ -514,9 +553,12 @@ function searchItems(
     // 从缓存获取或新建 Fuse 实例（避免每次按键都重建索引）
     const cacheKey = `${versionFilter}|${moduleFilter}|${kindFilter}`;
     let fuse: Fuse<ApiItem>;
-    const cached = _fuseCache.get(cacheKey);
+    const cached = fuseCache.get(cacheKey);
     if (cached && cached.itemsRef === items) {
         fuse = cached.fuse;
+        // LRU：刷新最近使用顺序
+        fuseCache.delete(cacheKey);
+        fuseCache.set(cacheKey, cached);
     } else {
         fuse = new Fuse(filtered, {
             keys: [
@@ -547,22 +589,32 @@ function searchItems(
             ],
             threshold: 0.3,
             minMatchCharLength: 1,
-            includeScore: true,
+            // includeScore: false —— 不分配 score 包装对象
+            includeScore: false,
             shouldSort: true,
-            findAllMatches: true,
+            // findAllMatches: false —— 找到首匹配后短路，大幅减少 CPU
+            findAllMatches: false,
+            // 启用 ignoreLocation：允许匹配跨越字段任意位置，更适合 API 名搜索
+            ignoreLocation: true,
         });
-        _fuseCache.set(cacheKey, { fuse, itemsRef: items });
+        // LRU 容量控制
+        if (fuseCache.size >= FUSE_CACHE_MAX) {
+            // 删除最早插入（最旧）的条目
+            const oldestKey = fuseCache.keys().next().value;
+            if (oldestKey !== undefined) { fuseCache.delete(oldestKey); }
+        }
+        fuseCache.set(cacheKey, { fuse, itemsRef: items });
     }
 
     const fuseResults = fuse.search(q);
     const results = fuseResults.map(r => r.item);
 
-    return { results, totalCount: results.length };
+    return { results, filtered };
 }
 
 // Webview View Provider
 
-export class ApiSearchProvider implements vscode.WebviewViewProvider {
+export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     public static readonly viewType = 'miniworld.apiSearchView';
     private _view?: vscode.WebviewView;
     private _allItems: ApiItem[] = [];
@@ -573,6 +625,36 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
     private _idMap: IdCategories = { item: {}, actor: {}, buff: {} };
     private _idDataLoaded = false;
     private _idError = '';
+    /** ID 数据版本戳：仅当数据变化时才向 webview 重新推送 */
+    private _idDataVersion = 0;
+    /** webview 上次收到的 ID 数据版本，避免重复推送相同数据 */
+    private _lastSentIdVersion = -1;
+
+    /** Fuse 实例缓存（实例级，避免模块级缓存永不释放） */
+    private readonly _fuseCache = new Map<string, { fuse: Fuse<ApiItem>; itemsRef: ApiItem[] }>();
+
+    /** 名称索引：用于 _handleShowDetail 的 O(1) 查找，key = `${name}\0${sourceFile}` */
+    private _nameIndex: Map<string, ApiItem[]> = new Map();
+
+    /** 最近一次完整搜索结果缓存（用于服务端分页时跳过重算） */
+    private _lastSearchKey: string | null = null;
+    private _lastSearchResults: ExpandedItem[] = [];
+
+    /** 已向 webview 推送过的 ID 数据版本，避免 initData 中重复推送 */
+    private _initDataSentIdVersion = -1;
+
+    /** 资源缓存：marked.umd.js / SVG 内容（仅按扩展版本变化） */
+    private static _assetCache: {
+        extensionPath: string;
+        searchSvg: string;
+        closeSvg: string;
+        copySvg: string;
+        checkSvg: string;
+        markedScript: string;
+        html: string;
+    } | undefined;
+
+    private readonly _disposables: vscode.Disposable[] = [];
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -589,10 +671,12 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
         try {
             this._allItems = await scanAllApis(multipleDir);
             this._typeRefMap = buildTypeRefMap(this._allItems);
+            this._buildNameIndex();
         } catch (err) {
             console.error('API 数据加载失败，下次 init() 会重试', err);
             this._allItems = [];
             this._typeRefMap = new Map();
+            this._nameIndex = new Map();
             return; // 失败时不标记 _initialized，后续调用可重试
         }
         this._initialized = true;
@@ -602,14 +686,29 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
         });
     }
 
+    /** 构建 name 索引：`${name}\0${sourceFile}` → 该位置的所有条目（O(1) 查找） */
+    private _buildNameIndex(): void {
+        const idx = new Map<string, ApiItem[]>();
+        for (const it of this._allItems) {
+            const key = `${it.name}\0${it.sourceFile}`;
+            const arr = idx.get(key);
+            if (arr) { arr.push(it); } else { idx.set(key, [it]); }
+        }
+        this._nameIndex = idx;
+    }
+
     /** 刷新数据（用于重新加载） */
     public async refresh(): Promise<void> {
         const baseDir = this._context.asAbsolutePath(path.join('multiple'));
         try {
             await fs.promises.access(baseDir);
             this._allItems = await scanAllApis(baseDir);
-            _fuseCache.clear();
+            this._fuseCache.clear();
             this._typeRefMap = buildTypeRefMap(this._allItems);
+            this._buildNameIndex();
+            // 清空搜索缓存
+            this._lastSearchKey = null;
+            this._lastSearchResults = [];
             this._initialized = true;
             if (this._view) {
                 this._sendInitData();
@@ -700,6 +799,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                             this._idMap = { item: cats.item, actor: cats.actor, buff: cats.buff };
                             this._idDataLoaded = true;
                             this._idError = '';
+                            this._idDataVersion++;
                             return;
                         }
                     }
@@ -710,6 +810,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
             this._idMap = categories;
             this._idDataLoaded = true;
             this._idError = '';
+            this._idDataVersion++;
             await fs.promises.mkdir(this._context.globalStorageUri.fsPath, { recursive: true });
             await fs.promises.writeFile(cacheFile.fsPath, JSON.stringify({ fetchedAt: new Date().toISOString(), data: categories }), 'utf-8');
         } catch (err) {
@@ -719,12 +820,18 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** 向 webview 推送 ID 数据 */
+    /** 向 webview 推送 ID 数据（仅当版本变化时） */
     private _sendIdData(): void {
+        if (this._lastSentIdVersion === this._idDataVersion) {
+            // 数据未变化，无需重发
+            return;
+        }
+        this._lastSentIdVersion = this._idDataVersion;
         this._view?.webview.postMessage({
             type: 'idData',
             data: this._idMap,
             error: this._idError || undefined,
+            version: this._idDataVersion,
         });
     }
 
@@ -748,9 +855,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
     ): Promise<void> {
         this._view = webviewView;
 
-        // 确保数据已加载
-        await this.init();
-
+        // 先设置 webview HTML 让用户看到 loading，再异步初始化数据
         webviewView.webview.options = {
             enableScripts: true,
             localResourceRoots: [
@@ -762,61 +867,118 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = await this._getHtmlContent(webviewView.webview);
 
-        webviewView.webview.onDidReceiveMessage(msg => {
-            switch (msg.type) {
-                case 'ready':
-                    this._sendInitData();
-                    break;
-                case 'search':
-                    this._handleSearch(msg.query, msg.version, msg.module, msg.kind);
-                    break;
-                case 'showDetail':
-                    this._handleShowDetail(msg);
-                    break;
-                case 'copy':
-                    vscode.env.clipboard.writeText(msg.text).then(() => {
-                        vscode.window.showInformationMessage(`已复制: ${msg.text}`);
-                    });
-                    break;
-                case 'getIds':
-                    this._sendIdData();
-                    break;
-            }
+        // 注册消息处理器（disposable 已记录到 _disposables，便于清理）
+        const msgDisposable = webviewView.webview.onDidReceiveMessage(msg => this._onMessage(msg));
+        this._disposables.push(msgDisposable);
+        webviewView.onDidDispose(() => {
+            msgDisposable.dispose();
+            // 仅清理 view 引用，不清理数据（用户可能重新打开）
+            this._view = undefined;
         });
+
+        // 异步加载数据后推送 init 数据
+        void this.init().then(() => {
+            if (this._view) { this._sendInitData(); }
+        });
+    }
+
+    private _onMessage(msg: any): void {
+        switch (msg.type) {
+            case 'ready':
+                this._sendInitData();
+                break;
+            case 'search':
+                this._handleSearch(msg.query, msg.version, msg.module, msg.kind, msg.page ?? 1, msg.pageSize ?? 25);
+                break;
+            case 'showDetail':
+                this._handleShowDetail(msg);
+                break;
+            case 'copy':
+                vscode.env.clipboard.writeText(msg.text).then(() => {
+                    vscode.window.showInformationMessage(`已复制: ${msg.text}`);
+                });
+                break;
+            case 'getIds':
+                // webview 已收到 initData，仅在版本过期时重新推送
+                this._sendIdData();
+                break;
+        }
     }
 
     private _sendInitData(): void {
         const modules20 = new Set<string>();
         const modules30 = new Set<string>();
         const counts = { total: this._allItems.length, func: 0, enum: 0, event: 0 };
-        const excluded = new Set(['Event', 'EnumLib']);
         for (const item of this._allItems) {
-            if (!excluded.has(item.module)) {
-                if (item.version === '2.0') {modules20.add(item.module);}
-                else {modules30.add(item.module);}
+            if (!EXCLUDED_MODULES.has(item.module)) {
+                if (item.version === '2.0') { modules20.add(item.module); }
+                else { modules30.add(item.module); }
             }
-            if (item.kind === 'function') {counts.func++;}
-            else if (item.kind === 'enum') {counts.enum++;}
-            else if (item.kind === 'event') {counts.event++;}
+            if (item.kind === 'function') { counts.func++; }
+            else if (item.kind === 'enum') { counts.enum++; }
+            else if (item.kind === 'event') { counts.event++; }
         }
 
-        this._view?.webview.postMessage({
+        const payload: any = {
             type: 'initData',
             modules20: Array.from(modules20).sort(),
             modules30: Array.from(modules30).sort(),
             counts,
-            idData: this._idMap,
+        };
+        // 仅当 ID 数据版本比上次推送更新时才附带 idData
+        if (this._idDataVersion !== this._initDataSentIdVersion) {
+            payload.idData = this._idMap;
+            payload.idDataVersion = this._idDataVersion;
+            this._initDataSentIdVersion = this._idDataVersion;
+            this._lastSentIdVersion = this._idDataVersion; // 标记 webview 已收到
+        }
+        this._view?.webview.postMessage(payload);
+    }
+
+    /**
+     * 服务端分页搜索：仅向 webview 推送当前页的 25 条结果，
+     * 避免每次按键都序列化/传输数千条结果。
+     */
+    private _handleSearch(query: string, version: string, module: string, kind: string, page: number, pageSize: number): void {
+        const searchKey = `${query}\0${version}\0${module}\0${kind}`;
+
+        // 缓存命中：直接复用上次完整结果
+        if (searchKey !== this._lastSearchKey) {
+            this._lastSearchKey = searchKey;
+            this._lastSearchResults = this._buildExpandedResults(query, version, module, kind);
+        }
+
+        const expanded = this._lastSearchResults;
+        const totalCount = expanded.length;
+        const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+        const safePage = Math.min(Math.max(1, page | 0), totalPages);
+        const start = (safePage - 1) * pageSize;
+        const end = Math.min(start + pageSize, totalCount);
+        const pageItems = expanded.slice(start, end);
+
+        this._view?.webview.postMessage({
+            type: 'searchResults',
+            results: pageItems,
+            totalCount,
+            page: safePage,
+            totalPages,
+            shownCount: pageItems.length,
         });
     }
 
-    private _handleSearch(query: string, version: string, module: string, kind: string): void {
-        let { results } = searchItems(this._allItems, query, version, module, kind);
+    /**
+     * 执行完整搜索 + 展开 + 前缀去重，返回完整的 ExpandedItem 数组。
+     * 调用方负责分页切片。
+     */
+    private _buildExpandedResults(query: string, version: string, module: string, kind: string): ExpandedItem[] {
+        const { results } = searchItems(this._allItems, query, version, module, kind, this._fuseCache);
         const q = query.trim().toLowerCase();
 
         // 对于点号分隔的查询（如 "EventDate.hour"），fuse.js 的模糊匹配无法将长查询
         // 匹配到字段名较短的条目上，导致 CurEventParam / EventDate 等条目丢失。
         // 此处补充搜索：找出字段名/描述匹配任一查询片段的条目。
         const querySegments = q ? q.split('.').filter(Boolean) : [];
+        let finalResults = results;
         if (querySegments.length > 1) {
             const seenKeys = new Set(results.map(r => `${r.name}:${r.sourceFile}:${r.sourceLine}`));
             const additional: ApiItem[] = [];
@@ -837,23 +999,14 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                 }
             }
             if (additional.length > 0) {
-                results = [...results, ...additional];
+                finalResults = results.concat(additional);
             }
         }
 
         // 将枚举/事件的字段展开为单独条目
-        let expanded: Array<{
-            name: string; kind: string; module: string; version: string;
-            description: string; paramCount: number; returnCount: number; fieldCount: number;
-            sourceFile: string; sourceLine: number;
-            parameters: ApiParam[]; returns: ApiReturn[]; fields: ApiField[];
-            displayName?: string;
-        }> = [];
+        let expanded: ExpandedItem[] = [];
 
-        // 不显示的事件父类（仅隐藏无点号的类名，子事件如 TriggerEvent.GameStart 仍显示）
-        const hiddenEventParents = new Set(['TriggerEvent', 'CurEventParam', 'ObjectEvent']);
-
-        for (const item of results) {
+        for (const item of finalResults) {
             // JSON 事件已按组名聚合，不展开子事件
             const isJsonEvent = item.sourceFile.endsWith('.json');
 
@@ -866,7 +1019,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                 const parentRef = parents?.find(p => p.sourceFile === item.sourceFile);
 
                 // 将查询按点号拆分为多个片段，支持逐段匹配（如 "EventDate.hour" 匹配 hour 字段）
-                const querySegments = q ? q.split('.').filter(Boolean) : [];
+                // querySegments 已在上方计算，此处复用
 
                 for (const field of item.fields) {
                     // 有搜索词时只包含匹配的字段（简单字符级模糊匹配）
@@ -900,15 +1053,15 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                         fieldCount: 0,
                         sourceFile: item.sourceFile,
                         sourceLine: item.sourceLine,
-                        parameters: [],
-                        returns: [],
-                        fields: [],
+                        parameters: EMPTY_PARAMS as ApiParam[],
+                        returns: EMPTY_RETURNS as ApiReturn[],
+                        fields: EMPTY_FIELDS as ApiField[],
                     });
                 }
                 // 如果字段全部被过滤（搜索词不匹配任何字段），至少保留类本身
                 // 但隐藏事件父类（TriggerEvent / CurEventParam / ObjectEvent）
                 // 以及被父类引用的子结构类型（如 EventDate）
-                if (!matchedAnyField && !hiddenEventParents.has(item.name) && !parentRef) {
+                if (!matchedAnyField && !HIDDEN_EVENT_PARENTS.has(item.name) && !parentRef) {
                     expanded.push({
                         name: item.name,
                         kind: item.kind,
@@ -920,12 +1073,12 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                         fieldCount: item.fields.length,
                         sourceFile: item.sourceFile,
                         sourceLine: item.sourceLine,
-                        parameters: [],
-                        returns: [],
-                        fields: [],
+                        parameters: EMPTY_PARAMS as ApiParam[],
+                        returns: EMPTY_RETURNS as ApiReturn[],
+                        fields: EMPTY_FIELDS as ApiField[],
                     });
                 }
-            } else if (!hiddenEventParents.has(item.name)) {
+            } else if (!HIDDEN_EVENT_PARENTS.has(item.name)) {
                 expanded.push({
                     name: item.name,
                     displayName: item.kind === 'function'
@@ -940,9 +1093,10 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                     fieldCount: 0,
                     sourceFile: item.sourceFile,
                     sourceLine: item.sourceLine,
+                    // 简介仅展示前 5 个参数与前 3 个返回值的摘要
                     parameters: item.parameters.slice(0, 5),
                     returns: item.returns.slice(0, 3),
-                    fields: [],
+                    fields: EMPTY_FIELDS as ApiField[],
                 });
             }
         }
@@ -950,31 +1104,21 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
         // 过滤冗余的中间父级路径：若同时存在 "A.B" 和 "A.B.C"，则 "A.B" 是冗余的
         // 利用排序后前缀相邻的特性将 O(n²) 降为 O(n log n)
         if (expanded.length > 1) {
-            const sorted = [...expanded].sort((a, b) => a.name.localeCompare(b.name));
-            const filtered: typeof expanded = [];
-            for (let i = 0; i < sorted.length; i++) {
-                const cur = sorted[i];
+            // 原地排序，避免额外分配 [...expanded]
+            expanded.sort((a, b) => a.name.localeCompare(b.name));
+            const filtered: ExpandedItem[] = [];
+            for (let i = 0; i < expanded.length; i++) {
+                const cur = expanded[i];
                 // 如果下一个条目以 cur.name + '.' 开头，则 cur 是冗余前缀
-                const next = sorted[i + 1];
+                const next = expanded[i + 1];
                 if (!next || !next.name.startsWith(cur.name + '.')) {
                     filtered.push(cur);
                 }
             }
-            expanded = filtered;
+            return filtered;
         }
 
-        // 保留字段展开后的总数
-        const expandedTotal = expanded.length;
-
-        // 已实现前端分页（25条/页），不再限制条数
-        const limited = expanded;
-
-        this._view?.webview.postMessage({
-            type: 'searchResults',
-            results: limited,
-            totalCount: expandedTotal,
-            shownCount: limited.length,
-        });
+        return expanded;
     }
 
     private _handleShowDetail(msg: { name: string; sourceFile: string; sourceLine: number; kind: string }): void {
@@ -991,29 +1135,21 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
             return bare;
         };
 
-        // 1. 精确匹配（name + sourceFile + sourceLine）
-        let item = this._allItems.find(i =>
-            i.name === msg.name &&
-            i.sourceFile === msg.sourceFile &&
-            i.sourceLine === msg.sourceLine
-        );
+        // 1. 精确匹配（name + sourceFile） —— 利用 name 索引，O(1) 平均查找
+        // 进一步过滤 sourceLine（多条同名时取匹配行号的）
+        const candidates = this._nameIndex.get(`${msg.name}\0${msg.sourceFile}`);
+        let item: ApiItem | undefined = candidates?.find(i => i.sourceLine === msg.sourceLine);
 
         // 2. 用裸函数名再试（处理带模块前缀的函数名）
         if (!item && msg.kind === 'function') {
             const bareName = getBareName(msg.name, msg.kind);
-            item = this._allItems.find(i =>
-                i.name === bareName &&
-                i.sourceFile === msg.sourceFile &&
-                i.sourceLine === msg.sourceLine
-            );
+            const bareCands = this._nameIndex.get(`${bareName}\0${msg.sourceFile}`);
+            item = bareCands?.find(i => i.sourceLine === msg.sourceLine);
         }
 
-        // 3. 精确匹配失败，尝试按 name + sourceFile 再找一次（JSON 事件行号均为 -1）
-        if (!item) {
-            item = this._allItems.find(i =>
-                i.name === msg.name &&
-                i.sourceFile === msg.sourceFile
-            );
+        // 3. 精确匹配失败，按 name + sourceFile 找（JSON 事件行号均为 -1）
+        if (!item && candidates && candidates.length > 0) {
+            item = candidates[0];
         }
 
         // 4. 仍失败 → 可能是展开的字段条目 (name 包含 .)，找到父类再取具体字段
@@ -1023,7 +1159,8 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
             if (dotIdx > 0) {
                 let parentName = msg.name.substring(0, dotIdx);
                 let fieldName = msg.name.substring(dotIdx + 1);
-                let parent = this._allItems.find(i => i.name === parentName && i.sourceFile === msg.sourceFile);
+                let parentCands = this._nameIndex.get(`${parentName}\0${msg.sourceFile}`);
+                let parent = parentCands?.[0];
 
                 // 处理嵌套路径如 CurEventParam.EventDate.hour → 取倒数第二段作为类名
                 if (!parent) {
@@ -1031,7 +1168,8 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                     if (parts.length >= 3) {
                         parentName = parts[parts.length - 2];
                         fieldName = parts[parts.length - 1];
-                        parent = this._allItems.find(i => i.name === parentName && i.sourceFile === msg.sourceFile);
+                        parentCands = this._nameIndex.get(`${parentName}\0${msg.sourceFile}`);
+                        parent = parentCands?.[0];
                     }
                 }
 
@@ -1048,10 +1186,9 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
         }
 
         // 构建详情数据
-        let parameters = item.parameters;
-        let returns = item.returns;
-        let fields = item.fields;
-        let description = fieldDetail ? fieldDetail.desc : item.description;
+        const parameters = item.parameters;
+        const returns = item.returns;
+        const description = fieldDetail ? fieldDetail.desc : item.description;
 
         // 解码事件参数：JSON 分组事件或 3.0 事件都可能有 event| 编码的子事件数据
         const isEventSource = item.sourceFile.endsWith('.json') || item.sourceFile.endsWith('MNEvent.d.lua');
@@ -1101,67 +1238,97 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
         return crypto.randomBytes(48).toString('base64url');
     }
 
-    private async _getHtmlContent(webview: vscode.Webview): Promise<string> {
-        const nonce = this._getNonce();
+    /**
+     * 资源预加载：marked.umd.js + SVG + search.html。
+     * 首次调用读取磁盘并缓存到模块级静态变量；后续直接复用，
+     * 避免每次 webview 解析都重新读取 6 个文件。
+     */
+    private static async _loadAssets(extensionUri: vscode.Uri): Promise<NonNullable<typeof ApiSearchProvider._assetCache>> {
+        if (ApiSearchProvider._assetCache && ApiSearchProvider._assetCache.extensionPath === extensionUri.fsPath) {
+            return ApiSearchProvider._assetCache;
+        }
 
-        const webviewDir = vscode.Uri.joinPath(this._extensionUri, 'addon', 'webview');
-        const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'style.css'));
-        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'script.js'));
+        const webviewDir = vscode.Uri.joinPath(extensionUri, 'addon', 'webview');
+        const iconDir = path.join(extensionUri.fsPath, 'addon', 'webview', 'assets', 'img');
+        const markedPath = path.join(extensionUri.fsPath, 'node_modules', 'marked', 'lib', 'marked.umd.js');
+        const htmlPath = vscode.Uri.joinPath(webviewDir, 'search.html');
 
-        // 异步读取 SVG 图标文件，直接内联为 <svg> 元素（零外部依赖、无 CSP 问题）
-        const iconDir = path.join(this._extensionUri.fsPath, 'addon', 'webview', 'assets', 'img');
         const readSvg = async (name: string): Promise<string> => {
-            const filePath = path.join(iconDir, name);
             try {
-                return (await fs.promises.readFile(filePath, 'utf-8')).trim();
+                return (await fs.promises.readFile(path.join(iconDir, name), 'utf-8')).trim();
             } catch {
                 return '';
             }
         };
-        const [searchSvg, closeSvg, copySvg, checkSvg] = await Promise.all([
+
+        // 并行读取所有 6 个文件
+        const [searchSvg, closeSvg, copySvg, checkSvg, markedScriptRead, htmlRead] = await Promise.all([
             readSvg('search.svg'),
             readSvg('close.svg'),
             readSvg('copy.svg'),
             readSvg('check.svg'),
+            fs.promises.readFile(markedPath, 'utf-8').catch(() => 'window.marked={parse:function(t){return t},parseInline:function(t){return t}};'),
+            fs.promises.readFile(htmlPath.fsPath, 'utf-8'),
         ]);
+
+        ApiSearchProvider._assetCache = {
+            extensionPath: extensionUri.fsPath,
+            searchSvg,
+            closeSvg,
+            copySvg,
+            checkSvg,
+            markedScript: markedScriptRead,
+            html: htmlRead,
+        };
+        return ApiSearchProvider._assetCache;
+    }
+
+    private async _getHtmlContent(webview: vscode.Webview): Promise<string> {
+        const nonce = this._getNonce();
+        const webviewDir = vscode.Uri.joinPath(this._extensionUri, 'addon', 'webview');
+        const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'style.css'));
+        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, 'script.js'));
+
+        const assets = await ApiSearchProvider._loadAssets(this._extensionUri);
 
         // SVG 的 HTML 转义版本（用于 data-* 属性，避免双引号破坏属性结构）
         const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const copySvgAttr = escHtml(copySvg);
-        const checkSvgAttr = escHtml(checkSvg);
-        const searchSvgAttr = escHtml(searchSvg);
+        const copySvgAttr = escHtml(assets.copySvg);
+        const checkSvgAttr = escHtml(assets.checkSvg);
+        const searchSvgAttr = escHtml(assets.searchSvg);
 
-        // 异步读取 marked 库并内联到 HTML 中
-        const markedPath = path.join(this._extensionUri.fsPath, 'node_modules', 'marked', 'lib', 'marked.umd.js');
-        let markedScript = '';
-        try {
-            markedScript = await fs.promises.readFile(markedPath, 'utf-8');
-        } catch {
-            console.warn('marked 库未找到，将使用降级方案');
-            // 降级方案：提供一个空的 marked polyfill
-            markedScript = 'window.marked={parse:function(t){return t},parseInline:function(t){return t}};';
-        }
-
-        const htmlPath = vscode.Uri.joinPath(webviewDir, 'search.html');
-        let html = await fs.promises.readFile(htmlPath.fsPath, 'utf-8');
-
-        html = html
+        let html = assets.html
             .replace(/\{\{nonce\}\}/g, nonce)
             .replace(/\{\{cspUri\}\}/g, webview.cspSource)
             .replace(/\{\{cssUri\}\}/g, cssUri.toString())
             .replace(/\{\{scriptUri\}\}/g, scriptUri.toString())
             // 直接内联 SVG（作为 DOM 元素）
-            .replace(/\{\{searchSvg\}\}/g, searchSvg)
-            .replace(/\{\{closeSvg\}\}/g, closeSvg)
-            .replace(/\{\{copySvg\}\}/g, copySvg)
-            .replace(/\{\{checkSvg\}\}/g, checkSvg)
+            .replace(/\{\{searchSvg\}\}/g, assets.searchSvg)
+            .replace(/\{\{closeSvg\}\}/g, assets.closeSvg)
+            .replace(/\{\{copySvg\}\}/g, assets.copySvg)
+            .replace(/\{\{checkSvg\}\}/g, assets.checkSvg)
             // HTML 转义版本（用于 data-* 属性，避免双引号破坏结构）
             .replace(/\{\{copySvgAttr\}\}/g, copySvgAttr)
             .replace(/\{\{checkSvgAttr\}\}/g, checkSvgAttr)
             .replace(/\{\{searchSvgAttr\}\}/g, searchSvgAttr)
             .replace('</head>',
-                `<script nonce="${nonce}">${markedScript}</script>\n</head>`);
+                `<script nonce="${nonce}">${assets.markedScript}</script>\n</head>`);
 
         return html;
+    }
+
+    /** 实现 Disposable 接口：清理所有资源 */
+    public dispose(): void {
+        for (const d of this._disposables) {
+            try { d.dispose(); } catch { /* ignore */ }
+        }
+        this._disposables.length = 0;
+        this._view = undefined;
+        this._allItems = [];
+        this._typeRefMap.clear();
+        this._nameIndex.clear();
+        this._fuseCache.clear();
+        this._lastSearchKey = null;
+        this._lastSearchResults = [];
     }
 }

@@ -74,9 +74,7 @@ def validate_choice(value: str, allowed: list[str], label: str) -> None:
 def print_section_header(title: str) -> None:
     """打印 rich 风格的章节标题"""
     console.print()
-    console.print(Rule(style="cyan"))
     console.print(Panel(title, style="bold cyan", expand=False))
-    console.print(Rule(style="cyan"))
 
 
 def _format_compare_result(result: CompareResult) -> None:

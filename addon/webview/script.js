@@ -23,6 +23,20 @@
     const selectTrigger = moduleSelect.querySelector('.select-trigger');
     const selectDropdown = moduleSelect.querySelector('.select-dropdown');
 
+    // 模块级常量
+    const PAGE_SIZE = 25;
+    // 错峰淡入动画的最大条数上限（避免后续项等待过久）
+    const FADE_IN_MAX = 10;
+    // HTML 转义表（用于 escapeHtml，无需每次创建 DOM 元素）
+    const HTML_ESCAPE_MAP = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    };
+    const HTML_ESCAPE_RE = /[&<>"']/g;
+
     let state = {
         version: 'all',
         module: 'all',
@@ -30,22 +44,27 @@
         activeTab: 'function',
         query: '',
         idData: { item: {}, actor: {}, buff: {} },
+        idDataVersion: -1,
         idCategory: 'item',
         idError: '',
         modules20: [],
         modules30: [],
         totalCount: 0,
-        pageSize: 25,
         currentPage: 1,
-        allResults: [],
+        totalPages: 1,
+        // ID 标签页使用客户端分页（数据较小且已预排序），其他标签页使用服务端分页
+        idResults: [],
+        idCurrentPage: 1,
+        // 预排序的 ID 条目缓存：category → 排序后的 [id, entry][]
+        idSortedCache: new Map(),
     };
 
     // 更新模块下拉选项
     function updateModuleOptions(version) {
         let mods;
-        if (version === '2.0') {mods = state.modules20;}
-        else if (version === '3.0') {mods = state.modules30;}
-        else {mods = [...new Set([...state.modules20, ...state.modules30])].sort();}
+        if (version === '2.0') { mods = state.modules20; }
+        else if (version === '3.0') { mods = state.modules30; }
+        else { mods = [...new Set([...state.modules20, ...state.modules30])].sort(); }
         const currentVal = selectTrigger.dataset.value;
         selectDropdown.innerHTML = '<button class="select-option active" data-value="all">全部模块</button>';
         for (const mod of mods) {
@@ -53,7 +72,7 @@
             opt.className = 'select-option';
             opt.dataset.value = mod;
             opt.textContent = mod;
-            if (mod === currentVal) opt.classList.add('active');
+            if (mod === currentVal) { opt.classList.add('active'); }
             selectDropdown.appendChild(opt);
         }
         // 重新绑定选项点击事件
@@ -87,14 +106,14 @@
                 opt.classList.add('active');
                 state.module = value;
                 closeDropdown();
-                doSearch();
+                doSearch(1);
             });
         });
     }
 
     // 切换下拉展开/收起
     function toggleDropdown() {
-        if (moduleSelect.classList.contains('disabled')) return;
+        if (moduleSelect.classList.contains('disabled')) { return; }
         const isOpen = selectDropdown.classList.contains('open');
         if (isOpen) {
             closeDropdown();
@@ -151,7 +170,7 @@
             } else {
                 moduleSelect.classList.remove('disabled');
             }
-            doSearch();
+            doSearch(1);
         });
     });
 
@@ -164,7 +183,7 @@
             state.version = value;
             // 切换版本时更新模块下拉
             updateModuleOptions(value);
-            doSearch();
+            doSearch(1);
         });
     });
 
@@ -175,6 +194,7 @@
             document.querySelectorAll('#idFilters .filter-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             state.idCategory = cat;
+            state.idCurrentPage = 1;
             renderIdView();
         });
     });
@@ -185,16 +205,20 @@
         toggleDropdown();
     });
 
-    // 搜索输入
+    // 搜索输入：合并两个 input 监听器为一个（防抖 + 显隐清空按钮）
     let debounceTimer;
     searchInput.addEventListener('input', () => {
+        // 即时控制清空按钮显隐
+        searchClear.classList.toggle('visible', searchInput.value.length > 0);
+        // 防抖触发搜索
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
             state.query = searchInput.value;
             if (state.activeTab === 'id') {
+                state.idCurrentPage = 1;
                 renderIdView();
             } else {
-                doSearch();
+                doSearch(1);
             }
         }, 150);
     });
@@ -204,12 +228,13 @@
         searchInput.value = '';
         state.query = '';
         searchClear.classList.remove('visible');
-        if (state.activeTab === 'id') { renderIdView(); } else { doSearch(); }
+        if (state.activeTab === 'id') {
+            state.idCurrentPage = 1;
+            renderIdView();
+        } else {
+            doSearch(1);
+        }
         searchInput.focus();
-    });
-    // 搜索框输入时控制清空按钮显隐
-    searchInput.addEventListener('input', () => {
-        searchClear.classList.toggle('visible', searchInput.value.length > 0);
     });
 
     // Ctrl+K 清空
@@ -219,55 +244,78 @@
             searchInput.value = '';
             state.query = '';
             searchClear.classList.remove('visible');
-            if (state.activeTab === 'id') { renderIdView(); } else { doSearch(); }
+            if (state.activeTab === 'id') {
+                state.idCurrentPage = 1;
+                renderIdView();
+            } else {
+                doSearch(1);
+            }
         }
     });
 
-    // 搜索
-    function doSearch() {
+    // 搜索（向扩展端发送请求，page=1 表示新搜索）
+    function doSearch(page) {
         vscode.postMessage({
             type: 'search',
             query: state.query,
             version: state.version,
             module: state.module,
             kind: state.kind,
+            page: page || 1,
+            pageSize: PAGE_SIZE,
         });
     }
 
-    // 渲染 ID 列表（ID 标签页）
+    // ===== ID 视图（客户端分页，使用预排序缓存） =====
+
+    /** 获取或构建某分类下已排序的 ID 条目数组 */
+    function getIdSortedEntries(category) {
+        let arr = state.idSortedCache.get(category);
+        if (arr) { return arr; }
+        const map = state.idData[category] || {};
+        arr = Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+        state.idSortedCache.set(category, arr);
+        return arr;
+    }
+
+    /** 失效 ID 排序缓存（idData 变化时调用） */
+    function invalidateIdCache() {
+        state.idSortedCache.clear();
+    }
+
+    // 渲染 ID 列表（ID 标签页，客户端分页）
     function renderIdView() {
         loadingEl.classList.add('hidden');
         const q = state.query.trim().toLowerCase();
-        const entries = Object.entries(state.idData[state.idCategory] || {});
+        const sorted = getIdSortedEntries(state.idCategory);
         const filtered = q
-            ? entries.filter(([id, e]) =>
+            ? sorted.filter(([id, e]) =>
                 id.toLowerCase().includes(q) ||
                 (e.name || '').toLowerCase().includes(q) ||
                 ((e.desc || '') || '').toLowerCase().includes(q))
-            : entries;
-        filtered.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+            : sorted;
 
-        if (state.idError && entries.length === 0) {
+        if (state.idError && sorted.length === 0) {
             resultsEl.innerHTML = `<div class="empty"><div class="empty-icon">${SVG.search}</div><div class="title">ID 数据加载失败</div><div class="subtitle">${escapeHtml(state.idError)}</div></div>`;
             paginationEl.innerHTML = '';
             statsEl.textContent = '0 / 0 个 ID';
             return;
         }
         if (filtered.length === 0) {
-            if (entries.length === 0 && !q) {
+            if (sorted.length === 0 && !q) {
                 resultsEl.innerHTML = `<div class="empty"><div class="empty-icon">${SVG.search}</div><div class="title">该分类暂无 ID 数据</div><div class="subtitle">可在服务器上传对应分类数据</div></div>`;
             } else {
                 resultsEl.innerHTML = `<div class="empty"><div class="empty-icon">${SVG.search}</div><div class="title">未找到匹配 ID</div><div class="subtitle">尝试使用更短的搜索词</div></div>`;
             }
             paginationEl.innerHTML = '';
-            statsEl.textContent = '0 / ' + entries.length + ' 个 ID';
+            statsEl.textContent = '0 / ' + sorted.length + ' 个 ID';
             return;
         }
 
-        // 转换为统一对象，交给通用分页渲染（每页 25 条）
-        state.allResults = filtered.map(([id, e]) => ({ id, name: e.name || '', desc: e.desc }));
-        state.currentPage = 1;
-        renderCurrentPage();
+        // 转换为统一对象，交给通用分页渲染（每页 PAGE_SIZE 条）
+        state.idResults = filtered.map(([id, e]) => ({ id, name: e.name || '', desc: e.desc }));
+        state.idCurrentPage = 1;
+        renderIdCurrentPage();
     }
 
     // 打开详情
@@ -316,7 +364,7 @@
 
     // 将 Markdown 渲染为 HTML（带错误保护）
     function renderMarkdown(text) {
-        if (!text) return '';
+        if (!text) { return ''; }
         try {
             return marked.parse(text);
         } catch (e) {
@@ -327,12 +375,78 @@
 
     // 将行内 Markdown 渲染为 HTML（不带块级元素包裹）
     function renderMarkdownInline(text) {
-        if (!text) return '';
+        if (!text) { return ''; }
         try {
             return marked.parseInline(text);
         } catch (e) {
             console.warn('Markdown 行内渲染失败:', e);
             return escapeHtml(text);
+        }
+    }
+
+    // ===== 详情页布局（resize 监听器只注册一次，避免内存泄漏） =====
+    // 用 ResizeObserver 监听 detailContent 尺寸变化（比 window resize 更精准、更省 CPU）
+    let detailResizeObserver = null;
+    function ensureDetailResizeObserver() {
+        if (detailResizeObserver || typeof ResizeObserver === 'undefined') { return; }
+        detailResizeObserver = new ResizeObserver(() => {
+            adjustDetailLayout();
+        });
+    }
+
+    function adjustDetailLayout() {
+        const grids = detailContent.querySelectorAll('.detail-grid');
+        for (const grid of grids) {
+            const w = grid.offsetWidth;
+            const rows = grid.querySelectorAll('.grid-row');
+            const header = grid.querySelector('.grid-header');
+            if (w < 500) {
+                // 窄屏：竖排，清除横排时设置的固定宽度
+                for (const row of rows) {
+                    row.style.flexDirection = 'column';
+                    const cells = row.querySelectorAll('.grid-cell');
+                    for (const c of cells) {
+                        // 用 cssText 一次性写入，避免多次 style 写入触发回流
+                        c.style.cssText = c.style.cssText.replace(/flex:[^;]*;?\s*/g, '')
+                            .replace(/min-width:[^;]*;?\s*/g, '')
+                            .replace(/overflow:[^;]*;?\s*/g, '')
+                            .replace(/text-overflow:[^;]*;?\s*/g, '');
+                    }
+                }
+                if (header) { header.style.display = 'none'; }
+            } else {
+                for (const row of rows) { row.style.flexDirection = 'row'; }
+                if (header) { header.style.display = ''; }
+            }
+        }
+        // 同步表头与行单元格宽度，确保对齐
+        syncGridAlignment();
+    }
+
+    function syncGridAlignment() {
+        const grids = detailContent.querySelectorAll('.detail-grid');
+        for (const grid of grids) {
+            const header = grid.querySelector('.grid-header');
+            const rows = grid.querySelectorAll('.grid-row');
+            if (!header || rows.length === 0) { continue; }
+            if (header.style.display === 'none') { continue; }
+            const headerCells = header.querySelectorAll('span');
+            if (headerCells.length === 0) { continue; }
+            // 批量读取所有 offsetWidth（一次性触发回流，避免读写交替）
+            const widths = new Array(headerCells.length);
+            for (let i = 0; i < headerCells.length; i++) {
+                widths[i] = headerCells[i].offsetWidth;
+            }
+            // 批量写入：每行每个单元格用单次 cssText 写入所有样式
+            for (const row of rows) {
+                const cells = row.querySelectorAll('.grid-cell');
+                cells.forEach((cell, i) => {
+                    if (i < widths.length) {
+                        // 单次 cssText 写入，避免触发多次样式重算
+                        cell.style.cssText = `flex:0 0 ${widths[i]}px;min-width:${widths[i]}px;overflow:hidden;text-overflow:ellipsis;`;
+                    }
+                });
+            }
         }
     }
 
@@ -418,70 +532,29 @@
             });
         }
 
-        // 检测容器宽度，自动切换横排/竖排
-        function adjustDetailLayout() {
-            const grids = detailContent.querySelectorAll('.detail-grid');
-            for (const grid of grids) {
-                const w = grid.offsetWidth;
-                const rows = grid.querySelectorAll('.grid-row');
-                const header = grid.querySelector('.grid-header');
-                if (w < 500) {
-                    for (const row of rows) {
-                        row.style.flexDirection = 'column';
-                        // 清除宽模式设置的固定宽度内联样式，恢复默认 flex
-                        const cells = row.querySelectorAll('.grid-cell');
-                        for (const c of cells) {
-                            c.style.flex = '';
-                            c.style.minWidth = '';
-                            c.style.overflow = '';
-                            c.style.textOverflow = '';
-                        }
-                    }
-                    if (header) header.style.display = 'none';
-                } else {
-                    for (const row of rows) row.style.flexDirection = 'row';
-                    if (header) header.style.display = '';
-                }
-            }
-            // 同步表头与行单元格宽度，确保对齐
-            syncGridAlignment();
+        // 注册 ResizeObserver（仅一次），监听 detailContent 内的网格
+        ensureDetailResizeObserver();
+        if (detailResizeObserver) {
+            // 先 disconnect 老的观察目标，避免重复
+            detailResizeObserver.disconnect();
+            detailContent.querySelectorAll('.detail-grid').forEach(g => {
+                detailResizeObserver.observe(g);
+            });
         }
-        function syncGridAlignment() {
-            const grids = detailContent.querySelectorAll('.detail-grid');
-            for (const grid of grids) {
-                const header = grid.querySelector('.grid-header');
-                const rows = grid.querySelectorAll('.grid-row');
-                if (!header || rows.length === 0) continue;
-                if (header.style.display === 'none') continue;
-                const headerCells = header.querySelectorAll('span');
-                if (headerCells.length === 0) continue;
-                // 读取表头每个单元格的宽度
-                const widths = Array.from(headerCells).map(cell => cell.offsetWidth);
-                for (const row of rows) {
-                    const cells = row.querySelectorAll('.grid-cell');
-                    cells.forEach((cell, i) => {
-                        if (i < widths.length) {
-                            cell.style.flex = `0 0 ${widths[i]}px`;
-                            cell.style.minWidth = `${widths[i]}px`;
-                            cell.style.overflow = 'hidden';
-                            cell.style.textOverflow = 'ellipsis';
-                        }
-                    });
-                }
-            }
-        }
+        // 初次布局
         adjustDetailLayout();
-        window.addEventListener('resize', adjustDetailLayout);
     }
 
-    // 渲染分页控件
-    function renderPagination() {
-        const total = state.allResults.length;
-        const pageSize = state.pageSize;
-        const totalPages = Math.max(1, Math.ceil(total / pageSize));
-        const page = state.currentPage;
+    // ===== 分页控件（服务端分页 + 客户端 ID 分页共用渲染） =====
 
-        if (total <= pageSize) {
+    /**
+     * 渲染分页控件
+     * @param {number} page 当前页
+     * @param {number} totalPages 总页数
+     * @param {function} onPaging 翻页回调，参数为新页码
+     */
+    function renderPagination(page, totalPages, onPaging) {
+        if (totalPages <= 1) {
             paginationEl.innerHTML = '';
             return;
         }
@@ -496,7 +569,7 @@
         // 第 2 行：页码信息 + 输入框
         html += `<div class="page-input-row">`;
         html += `<span class="page-info">第</span>`;
-        html += `<input type="number" class="page-input" id="pageInput" value="${page}" min="1" max="${totalPages}" />`;
+        html += `<input type="number" class="page-input" value="${page}" min="1" max="${totalPages}" />`;
         html += `<span class="page-info">/ ${totalPages} 页</span>`;
         html += `</div>`;
 
@@ -508,24 +581,16 @@
         const pageInput = paginationEl.querySelector('.page-input');
 
         prevBtn.addEventListener('click', () => {
-            if (state.currentPage > 1) {
-                state.currentPage--;
-                renderCurrentPage();
-            }
+            if (page > 1) { onPaging(page - 1); }
         });
         nextBtn.addEventListener('click', () => {
-            if (state.currentPage < totalPages) {
-                state.currentPage++;
-                renderCurrentPage();
-            }
+            if (page < totalPages) { onPaging(page + 1); }
         });
         pageInput.addEventListener('change', () => {
             let p = parseInt(pageInput.value, 10);
-            if (isNaN(p) || p < 1) {p = 1;}
-            if (p > totalPages) {p = totalPages;}
-            state.currentPage = p;
-            pageInput.value = p;
-            renderCurrentPage();
+            if (isNaN(p) || p < 1) { p = 1; }
+            if (p > totalPages) { p = totalPages; }
+            onPaging(p);
         });
         pageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
@@ -534,113 +599,18 @@
         });
     }
 
-    // 渲染当前页
-    function renderCurrentPage() {
-        // 切页时滚动到顶部
-        searchView.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-        const total = state.allResults.length;
-        const pageSize = state.pageSize;
-        const totalPages = Math.max(1, Math.ceil(total / pageSize));
-        const page = state.currentPage;
-
-        const start = (page - 1) * pageSize;
-        const end = Math.min(start + pageSize, total);
-        const pageItems = state.allResults.slice(start, end);
-
-        statsEl.textContent = state.activeTab === 'id'
-            ? `${end} / ${total} 个 ID`
-            : `${end} / ${total} 条结果`;
-
-        resultsEl.innerHTML = '';
-        if (state.activeTab === 'id') {
-            // ID 卡片：标题为物品名称，名称位置显示 ID，复制按钮复制 ID
-            for (const item of pageItems) {
-                const card = document.createElement('div');
-                card.className = 'result-item fade-in';
-                card.innerHTML = `
-                    <div class="result-header">
-                        <span class="result-name">${escapeHtml(item.name || item.id)}</span>
-                    </div>
-                    <div class="result-tags">
-                        <span class="result-kind kind-id">ID</span>
-                        <span class="result-module id-id">${escapeHtml(item.id)}</span>
-                        <button class="copy-btn result-copy-btn" data-copy="${escapeHtml(item.id)}" title="复制 ID">${SVG.copy}</button>
-                    </div>
-                    ${item.desc ? '<div class="result-desc">' + escapeHtml(item.desc) + '</div>' : ''}
-                `;
-                // 复制按钮：复制 ID（阻止冒泡）
-                const copyBtn = card.querySelector('.result-copy-btn');
-                copyBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    copyToClipboard(item.id, copyBtn);
-                });
-
-                // 点击卡片进入 ID 详情
-                card.addEventListener('click', () => showIdDetail(item.id));
-                resultsEl.appendChild(card);
-            }
-        } else {
-            for (const item of pageItems) {
-                const card = document.createElement('div');
-                card.className = `result-item version-${item.version.replace('.', '\\.')}`;
-
-                const kindLabel = { function: '函数', enum: '枚举', event: '事件' }[item.kind] || item.kind;
-
-                let metaParts = [];
-                if (item.kind === 'function') {
-                    if (item.paramCount > 0) metaParts.push(`${item.paramCount} 参数`);
-                    if (item.returnCount > 0) metaParts.push(`${item.returnCount} 返回值`);
-                } else if (item.kind === 'enum' || item.kind === 'event') {
-                    if (item.fieldCount > 0) metaParts.push(`${item.fieldCount} 字段`);
-                }
-
-                // 取描述第一行作为简略摘要
-                const briefDesc = item.description ? item.description.split('\n')[0] : '';
-
-                const paramsPreview = item.parameters.length > 0
-                    ? item.parameters.map(p => `<code>${p.name}: ${p.type}</code>`).join(', ')
-                    : '';
-
-                const displayName = item.displayName || item.name;
-                card.innerHTML = `
-                    <div class="result-header">
-                        <span class="result-name">${displayName}</span>
-                    </div>
-                    <div class="result-tags">
-                        <span class="result-kind kind-${item.kind}">${kindLabel}</span>
-                        <span class="result-version version-${item.version}-tag">${item.version}</span>
-                        <span class="result-module">${item.module}</span>
-                        <button class="copy-btn result-copy-btn" data-copy="${displayName}" title="复制名称">${SVG.copy}</button>
-                    </div>
-                    ${briefDesc ? '<div class="result-desc">' + escapeHtml(briefDesc) + '</div>' : ''}
-                    ${paramsPreview ? '<div class="result-meta">' + paramsPreview + '</div>' : ''}
-                    ${metaParts.length > 0 ? '<div class="result-meta">' + metaParts.join(' · ') + '</div>' : ''}
-                `;
-                // 错峰淡入动画
-                const idx = resultsEl.children.length;
-                card.style.animationDelay = (idx * 0.03) + 's';
-
-                // 复制按钮阻止冒泡，避免触发详情跳转
-                const copyBtn = card.querySelector('.result-copy-btn');
-                copyBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    copyToClipboard(displayName, copyBtn);
-                });
-
-                card.addEventListener('click', () => showDetail(item.name, item.sourceFile, item.sourceLine, item.kind));
-                resultsEl.appendChild(card);
-            }
-        }
-
-        renderPagination();
-    }
-
-    // 渲染结果
-    function renderResults(data) {
+    // 渲染 API 搜索结果当前页（服务端分页：直接渲染 extension 推送的 25 条）
+    function renderSearchResultsPage(data) {
         loadingEl.classList.add('hidden');
+        state.currentPage = data.page || 1;
+        state.totalPages = data.totalPages || 1;
+        state.totalCount = data.totalCount || 0;
 
-        if (data.results.length === 0) {
+        const pageItems = data.results || [];
+        const end = pageItems.length;
+        const total = state.totalCount;
+
+        if (total === 0) {
             resultsEl.innerHTML = `
                 <div class="empty">
                     <div class="empty-icon">${SVG.search}</div>
@@ -650,14 +620,118 @@
             `;
             paginationEl.innerHTML = '';
             statsEl.textContent = data.totalCount + ' 条 API · 无匹配结果';
-            state.allResults = [];
             return;
         }
 
-        // 保存全部结果，重置到第一页
-        state.allResults = data.results;
-        state.currentPage = 1;
-        renderCurrentPage();
+        statsEl.textContent = `${end} / ${total} 条结果`;
+
+        // 渲染当前页的卡片
+        resultsEl.innerHTML = '';
+        for (let idx = 0; idx < pageItems.length; idx++) {
+            const item = pageItems[idx];
+            const card = document.createElement('div');
+            card.className = `result-item version-${item.version.replace('.', '\\.')}`;
+
+            const kindLabel = { function: '函数', enum: '枚举', event: '事件' }[item.kind] || item.kind;
+
+            const metaParts = [];
+            if (item.kind === 'function') {
+                if (item.paramCount > 0) { metaParts.push(`${item.paramCount} 参数`); }
+                if (item.returnCount > 0) { metaParts.push(`${item.returnCount} 返回值`); }
+            } else if (item.kind === 'enum' || item.kind === 'event') {
+                if (item.fieldCount > 0) { metaParts.push(`${item.fieldCount} 字段`); }
+            }
+
+            // 取描述第一行作为简略摘要
+            const briefDesc = item.description ? item.description.split('\n')[0] : '';
+
+            const paramsPreview = item.parameters && item.parameters.length > 0
+                ? item.parameters.map(p => `<code>${escapeHtml(p.name)}: ${escapeHtml(p.type)}</code>`).join(', ')
+                : '';
+
+            const displayName = item.displayName || item.name;
+            card.innerHTML = `
+                <div class="result-header">
+                    <span class="result-name">${escapeHtml(displayName)}</span>
+                </div>
+                <div class="result-tags">
+                    <span class="result-kind kind-${item.kind}">${kindLabel}</span>
+                    <span class="result-version version-${item.version}-tag">${item.version}</span>
+                    <span class="result-module">${escapeHtml(item.module)}</span>
+                    <button class="copy-btn result-copy-btn" data-copy="${escapeHtml(displayName)}" title="复制名称">${SVG.copy}</button>
+                </div>
+                ${briefDesc ? '<div class="result-desc">' + escapeHtml(briefDesc) + '</div>' : ''}
+                ${paramsPreview ? '<div class="result-meta">' + paramsPreview + '</div>' : ''}
+                ${metaParts.length > 0 ? '<div class="result-meta">' + metaParts.join(' · ') + '</div>' : ''}
+            `;
+            // 错峰淡入动画：上限 FADE_IN_MAX 条，避免后续项等待过久
+            const delayIdx = Math.min(idx, FADE_IN_MAX);
+            card.style.animationDelay = (delayIdx * 0.03) + 's';
+
+            // 复制按钮阻止冒泡，避免触发详情跳转
+            const copyBtn = card.querySelector('.result-copy-btn');
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                copyToClipboard(displayName, copyBtn);
+            });
+
+            card.addEventListener('click', () => showDetail(item.name, item.sourceFile, item.sourceLine, item.kind));
+            resultsEl.appendChild(card);
+        }
+
+        // 分页控件：服务端分页，翻页时重新发送 search 请求
+        renderPagination(state.currentPage, state.totalPages, (newPage) => {
+            doSearch(newPage);
+        });
+    }
+
+    // 渲染 ID 当前页（客户端分页）
+    function renderIdCurrentPage() {
+        // 切页时滚动到顶部
+        searchView.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        const total = state.idResults.length;
+        const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+        const page = state.idCurrentPage;
+
+        const start = (page - 1) * PAGE_SIZE;
+        const end = Math.min(start + PAGE_SIZE, total);
+        const pageItems = state.idResults.slice(start, end);
+
+        statsEl.textContent = `${end} / ${total} 个 ID`;
+
+        resultsEl.innerHTML = '';
+        for (let idx = 0; idx < pageItems.length; idx++) {
+            const item = pageItems[idx];
+            const card = document.createElement('div');
+            card.className = 'result-item fade-in';
+            card.innerHTML = `
+                <div class="result-header">
+                    <span class="result-name">${escapeHtml(item.name || item.id)}</span>
+                </div>
+                <div class="result-tags">
+                    <span class="result-kind kind-id">ID</span>
+                    <span class="result-module id-id">${escapeHtml(item.id)}</span>
+                    <button class="copy-btn result-copy-btn" data-copy="${escapeHtml(item.id)}" title="复制 ID">${SVG.copy}</button>
+                </div>
+                ${item.desc ? '<div class="result-desc">' + escapeHtml(item.desc) + '</div>' : ''}
+            `;
+            // 复制按钮：复制 ID（阻止冒泡）
+            const copyBtn = card.querySelector('.result-copy-btn');
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                copyToClipboard(item.id, copyBtn);
+            });
+
+            // 点击卡片进入 ID 详情
+            card.addEventListener('click', () => showIdDetail(item.id));
+            resultsEl.appendChild(card);
+        }
+
+        renderPagination(page, totalPages, (newPage) => {
+            state.idCurrentPage = newPage;
+            renderIdCurrentPage();
+        });
     }
 
     // 复制到剪贴板
@@ -680,10 +754,10 @@
         });
     }
 
+    // 纯字符串 escapeHtml：避免每次创建 DOM 元素的开销
     function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        if (str == null) { return ''; }
+        return String(str).replace(HTML_ESCAPE_RE, (c) => HTML_ESCAPE_MAP[c]);
     }
 
     // 接收消息
@@ -691,30 +765,38 @@
         const msg = event.data;
         switch (msg.type) {
             case 'initData':
-                state.modules20 = msg.modules20;
-                state.modules30 = msg.modules30;
-                if (msg.idData) { state.idData = msg.idData; }
+                state.modules20 = msg.modules20 || [];
+                state.modules30 = msg.modules30 || [];
+                if (msg.idData !== undefined) {
+                    state.idData = msg.idData;
+                    state.idDataVersion = msg.idDataVersion ?? 0;
+                    invalidateIdCache();
+                }
                 // 根据当前版本筛选填充模块下拉
                 updateModuleOptions(state.version);
-                state.totalCount = msg.counts.total;
+                state.totalCount = msg.counts?.total ?? 0;
 
                 // 更新统计
-                const c = msg.counts;
-                statsEl.textContent = `${c.total} 条 API（函数 ${c.func} · 枚举 ${c.enum} · 事件 ${c.event}）`;
+                if (msg.counts) {
+                    const c = msg.counts;
+                    statsEl.textContent = `${c.total} 条 API（函数 ${c.func} · 枚举 ${c.enum} · 事件 ${c.event}）`;
+                }
                 loadingEl.classList.add('hidden');
 
                 // 初始搜索（ID 标签则渲染 ID 列表）
-                if (state.activeTab === 'id') { renderIdView(); } else { doSearch(); }
+                if (state.activeTab === 'id') { renderIdView(); } else { doSearch(1); }
                 break;
 
             case 'idData':
                 state.idData = msg.data || { item: {}, actor: {}, buff: {} };
                 state.idError = msg.error || '';
+                state.idDataVersion = msg.version ?? state.idDataVersion + 1;
+                invalidateIdCache();
                 if (state.activeTab === 'id') { renderIdView(); }
                 break;
 
             case 'searchResults':
-                renderResults(msg);
+                renderSearchResultsPage(msg);
                 break;
             case 'detailResult':
                 if (msg.error) {
