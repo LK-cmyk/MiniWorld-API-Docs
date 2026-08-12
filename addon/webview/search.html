@@ -21,7 +21,16 @@
         </div>
 
         <div class="filters">
-            <div class="filter-row">
+            <!-- 一级：类型标签页（函数/枚举/事件/ID） -->
+            <div class="tabs" role="tablist" aria-label="API 类型">
+                <button class="tab active" data-filter="kind" data-value="function" role="tab" aria-selected="true">函数</button>
+                <button class="tab" data-filter="kind" data-value="enum" role="tab" aria-selected="false">枚举</button>
+                <button class="tab" data-filter="kind" data-value="event" role="tab" aria-selected="false">事件</button>
+                <button class="tab" data-filter="id" data-value="id" role="tab" aria-selected="false">ID</button>
+            </div>
+
+            <!-- 二级：版本 + 模块 -->
+            <div class="filter-row" id="secondFilters">
                 <button class="filter-btn active" data-filter="version" data-value="all">全部版本</button>
                 <button class="filter-btn" data-filter="version" data-value="2.0">2.0</button>
                 <button class="filter-btn" data-filter="version" data-value="3.0">3.0</button>
@@ -34,11 +43,11 @@
                 </div>
             </div>
 
-            <div class="filter-row">
-                <button class="filter-btn active" data-filter="kind" data-value="all">全部</button>
-                <button class="filter-btn" data-filter="kind" data-value="function">函数</button>
-                <button class="filter-btn" data-filter="kind" data-value="enum">枚举</button>
-                <button class="filter-btn" data-filter="kind" data-value="event">事件</button>
+            <!-- ID 标签二级筛选：分类 -->
+            <div class="filter-row hidden" id="idFilters">
+                <button class="filter-btn active" data-id-category="item">道具</button>
+                <button class="filter-btn" data-id-category="actor">生物</button>
+                <button class="filter-btn" data-id-category="buff">状态</button>
             </div>
         </div>
 

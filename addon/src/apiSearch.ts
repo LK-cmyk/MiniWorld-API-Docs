@@ -44,6 +44,23 @@ export interface ApiItem {
     className?: string;
 }
 
+/** ID 数据条目 */
+export interface IdEntry {
+    name: string;
+    desc?: string;
+}
+/** ID 数据：ID → { name, desc }，desc 可选 */
+export type IdMap = Record<string, IdEntry>;
+/** ID 分类：item=道具 / actor=生物 / buff=状态 */
+export type IdCategory = 'item' | 'actor' | 'buff';
+/** ID 分类数据：分类 → ID 映射 */
+export type IdCategories = Record<IdCategory, IdMap>;
+
+/** ID 数据缓存有效期：10 天 */
+const ID_CACHE_TTL_MS = 10 * 24 * 60 * 60 * 1000;
+/** ID 数据在 Worker 上的下载类型（分类） */
+const ID_DOWNLOAD_TYPES: IdCategory[] = ['item', 'actor', 'buff'];
+
 // 解析器
 
 /**
@@ -553,6 +570,9 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
     /** 类型引用映射：子类型名 → { 父类名, 字段名, 源文件 } */
     private _typeRefMap: Map<string, Array<{ parentName: string; fieldName: string; sourceFile: string }>> = new Map();
     private _context: vscode.ExtensionContext;
+    private _idMap: IdCategories = { item: {}, actor: {}, buff: {} };
+    private _idDataLoaded = false;
+    private _idError = '';
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -576,6 +596,10 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
             return; // 失败时不标记 _initialized，后续调用可重试
         }
         this._initialized = true;
+        // 异步加载 ID 数据（失败不阻塞搜索）
+        void this.loadIdData().then(() => {
+            if (this._view) { this._sendIdData(); }
+        });
     }
 
     /** 刷新数据（用于重新加载） */
@@ -599,6 +623,122 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                 });
             }
         }
+        // ID 数据：强制重新下载（失败不阻塞）
+        await this.loadIdData(true);
+        this._sendIdData();
+    }
+
+    /** 获取服务器地址设置 */
+    private _getServerUrl(): string {
+        const cfg = vscode.workspace.getConfiguration('miniworld');
+        return (cfg.get<string>('serverUrl') || 'desc.cmyk.dpdns.org').trim();
+    }
+
+    private _idCacheFile(): vscode.Uri {
+        return vscode.Uri.joinPath(this._context.globalStorageUri, 'id-cache.json');
+    }
+
+    /** 从服务器下载单个分类的 ID 数据 */
+    private async _downloadIdData(serverUrl: string, type: string): Promise<IdMap> {
+        const clean = serverUrl.replace(/\/+$/, '');
+        const base = /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
+        const url = `${base}/api/download?type=${type}`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        try {
+            const resp = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+            if (!resp.ok) {
+                throw new Error(`服务器返回 HTTP ${resp.status}`);
+            }
+            const data = (await resp.json()) as unknown;
+            const map: IdMap = {};
+            if (data && typeof data === 'object') {
+                for (const [id, entry] of Object.entries(data as Record<string, unknown>)) {
+                    const e = entry as { name?: unknown; desc?: unknown };
+                    if (e && typeof e === 'object' && typeof e.name === 'string') {
+                        const item: IdEntry = { name: e.name };
+                        if (typeof e.desc === 'string') { item.desc = e.desc; }
+                        map[id] = item;
+                    }
+                }
+            }
+            return map;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    /** 下载全部 ID 分类（单项失败不阻塞；全部失败则抛出） */
+    private async _downloadAllIdData(serverUrl: string): Promise<IdCategories> {
+        const results = await Promise.all(ID_DOWNLOAD_TYPES.map(async (type) => {
+            try {
+                return { type, map: await this._downloadIdData(serverUrl, type), ok: true };
+            } catch {
+                return { type, map: {} as IdMap, ok: false };
+            }
+        }));
+        const categories = Object.fromEntries(results.map(r => [r.type, r.map])) as IdCategories;
+        if (!results.some(r => r.ok)) {
+            throw new Error('所有 ID 数据源均下载失败');
+        }
+        return categories;
+    }
+
+    /** 加载 ID 数据（优先 10 天缓存，过期/强制时重新下载） */
+    public async loadIdData(force = false): Promise<void> {
+        if (this._idDataLoaded && !force) { return; }
+        const cacheFile = this._idCacheFile();
+        try {
+            if (!force) {
+                try {
+                    const raw = await fs.promises.readFile(cacheFile.fsPath, 'utf-8');
+                    const cached = JSON.parse(raw) as { fetchedAt: string; data: IdCategories };
+                    const cats = cached?.data;
+                    if (cats && cats.item && cats.actor && cats.buff && cached.fetchedAt) {
+                        const age = Date.now() - new Date(cached.fetchedAt).getTime();
+                        if (age >= 0 && age < ID_CACHE_TTL_MS) {
+                            this._idMap = { item: cats.item, actor: cats.actor, buff: cats.buff };
+                            this._idDataLoaded = true;
+                            this._idError = '';
+                            return;
+                        }
+                    }
+                } catch { /* 缓存缺失或损坏，继续下载 */ }
+            }
+            const serverUrl = this._getServerUrl();
+            const categories = await this._downloadAllIdData(serverUrl);
+            this._idMap = categories;
+            this._idDataLoaded = true;
+            this._idError = '';
+            await fs.promises.mkdir(this._context.globalStorageUri.fsPath, { recursive: true });
+            await fs.promises.writeFile(cacheFile.fsPath, JSON.stringify({ fetchedAt: new Date().toISOString(), data: categories }), 'utf-8');
+        } catch (err) {
+            console.error('ID 数据加载失败', err);
+            this._idError = err instanceof Error ? err.message : String(err);
+            // 保留旧缓存数据（若有）
+        }
+    }
+
+    /** 向 webview 推送 ID 数据 */
+    private _sendIdData(): void {
+        this._view?.webview.postMessage({
+            type: 'idData',
+            data: this._idMap,
+            error: this._idError || undefined,
+        });
+    }
+
+    /** 清空 ID 数据缓存并强制重新下载；成功返回 true */
+    public async clearIdCache(): Promise<boolean> {
+        this._idDataLoaded = false;
+        this._idError = '';
+        const cacheFile = this._idCacheFile();
+        try {
+            await fs.promises.unlink(cacheFile.fsPath);
+        } catch { /* 缓存文件不存在也视为已清空 */ }
+        await this.loadIdData(true);
+        this._sendIdData();
+        return !this._idError;
     }
 
     async resolveWebviewView(
@@ -638,6 +778,9 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
                         vscode.window.showInformationMessage(`已复制: ${msg.text}`);
                     });
                     break;
+                case 'getIds':
+                    this._sendIdData();
+                    break;
             }
         });
     }
@@ -662,6 +805,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider {
             modules20: Array.from(modules20).sort(),
             modules30: Array.from(modules30).sort(),
             counts,
+            idData: this._idMap,
         });
     }
 

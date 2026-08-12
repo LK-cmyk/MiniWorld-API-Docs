@@ -20,6 +20,16 @@
   ],
   "main": "./addon/out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "MiniWorld API Description",
+      "properties": {
+        "miniworld.serverUrl": {
+          "type": "string",
+          "default": "desc.cmyk.dpdns.org",
+          "markdownDescription": "MiniWorld API 数据服务器地址。ID 数据将从 `https://<地址>/api/download?type=item` 下载并缓存 10 天。"
+        }
+      }
+    },
     "commands": [
       {
         "command": "complete.addDeclarations20",
@@ -44,6 +54,10 @@
       {
         "command": "miniworld.apiSearch.refresh",
         "title": "MiniWorld API Description: 刷新 API 搜索索引"
+      },
+      {
+        "command": "miniworld.apiSearch.clearCache",
+        "title": "MiniWorld API Description: 清空 ID 数据缓存"
       }
     ],
     "viewsContainers": {

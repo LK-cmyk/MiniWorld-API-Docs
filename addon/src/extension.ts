@@ -26,6 +26,14 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('miniworld.apiSearch.refresh', async () => {
             await apiSearchProvider.refresh();
         }),
+        vscode.commands.registerCommand('miniworld.apiSearch.clearCache', async () => {
+            const ok = await apiSearchProvider.clearIdCache();
+            if (ok) {
+                vscode.window.showInformationMessage('MiniWorld API：ID 数据缓存已清空并重新下载');
+            } else {
+                vscode.window.showWarningMessage('MiniWorld API：缓存已清空，但重新下载失败（请检查服务器地址设置）');
+            }
+        }),
     );
 }
 
