@@ -42,3 +42,5 @@ tools/
 out/
 server/
 .github/
+config.ini
+config.example.ini
