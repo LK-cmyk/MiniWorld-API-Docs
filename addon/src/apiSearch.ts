@@ -672,6 +672,9 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             this._allItems = await scanAllApis(multipleDir);
             this._typeRefMap = buildTypeRefMap(this._allItems);
             this._buildNameIndex();
+            // 数据已更新，失效搜索结果缓存，避免首次打开时用空结果命中缓存导致列表不刷新
+            this._lastSearchKey = null;
+            this._lastSearchResults = [];
         } catch (err) {
             console.error('API 数据加载失败，下次 init() 会重试', err);
             this._allItems = [];
@@ -885,7 +888,9 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
     private _onMessage(msg: any): void {
         switch (msg.type) {
             case 'ready':
-                this._sendInitData();
+                // init 尚未完成时不推送空数据，避免闪现“未找到匹配结果”；
+                // init 完成后由 resolveWebviewView 的 init().then() 统一推送
+                if (this._initialized) { this._sendInitData(); }
                 break;
             case 'search':
                 this._handleSearch(msg.query, msg.version, msg.module, msg.kind, msg.page ?? 1, msg.pageSize ?? 25);

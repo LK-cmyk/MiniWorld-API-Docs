@@ -253,8 +253,23 @@
         }
     });
 
+    // 加载动画
+    // 展示时立即显示；隐藏时至少保持 150ms，避免快速请求造成闪烁
+    let loadingHideTimer = null;
+    function showLoading() {
+        clearTimeout(loadingHideTimer);
+        loadingEl.classList.remove('hidden');
+    }
+    function hideLoading() {
+        clearTimeout(loadingHideTimer);
+        loadingHideTimer = setTimeout(() => {
+            loadingEl.classList.add('hidden');
+        }, 150);
+    }
+
     // 搜索（向扩展端发送请求，page=1 表示新搜索）
     function doSearch(page) {
+        showLoading();
         vscode.postMessage({
             type: 'search',
             query: state.query,
@@ -266,7 +281,7 @@
         });
     }
 
-    // ===== ID 视图（客户端分页，使用预排序缓存） =====
+    // ID 视图（客户端分页，使用预排序缓存） 
 
     /** 获取或构建某分类下已排序的 ID 条目数组 */
     function getIdSortedEntries(category) {
@@ -285,7 +300,7 @@
 
     // 渲染 ID 列表（ID 标签页，客户端分页）
     function renderIdView() {
-        loadingEl.classList.add('hidden');
+        hideLoading();
         const q = state.query.trim().toLowerCase();
         const sorted = getIdSortedEntries(state.idCategory);
         const filtered = q
@@ -384,7 +399,7 @@
         }
     }
 
-    // ===== 详情页布局（resize 监听器只注册一次，避免内存泄漏） =====
+    // 详情页布局（resize 监听器只注册一次，避免内存泄漏） 
     // 用 ResizeObserver 监听 detailContent 尺寸变化（比 window resize 更精准、更省 CPU）
     let detailResizeObserver = null;
     function ensureDetailResizeObserver() {
@@ -545,7 +560,7 @@
         adjustDetailLayout();
     }
 
-    // ===== 分页控件（服务端分页 + 客户端 ID 分页共用渲染） =====
+    // 分页控件（服务端分页 + 客户端 ID 分页共用渲染） 
 
     /**
      * 渲染分页控件
@@ -601,14 +616,15 @@
 
     // 渲染 API 搜索结果当前页（服务端分页：直接渲染 extension 推送的 25 条）
     function renderSearchResultsPage(data) {
-        loadingEl.classList.add('hidden');
+        hideLoading();
         state.currentPage = data.page || 1;
         state.totalPages = data.totalPages || 1;
         state.totalCount = data.totalCount || 0;
 
         const pageItems = data.results || [];
-        const end = pageItems.length;
         const total = state.totalCount;
+        // 累计到当前页末尾的条数（第 2 页显示 50 / 60，末页显示 60 / 60）
+        const end = Math.min((state.currentPage || 1) * PAGE_SIZE, total);
 
         if (total === 0) {
             resultsEl.innerHTML = `
@@ -781,7 +797,7 @@
                     const c = msg.counts;
                     statsEl.textContent = `${c.total} 条 API（函数 ${c.func} · 枚举 ${c.enum} · 事件 ${c.event}）`;
                 }
-                loadingEl.classList.add('hidden');
+                hideLoading();
 
                 // 初始搜索（ID 标签则渲染 ID 列表）
                 if (state.activeTab === 'id') { renderIdView(); } else { doSearch(1); }
