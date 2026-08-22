@@ -27,25 +27,32 @@
           "type": "string",
           "default": "desc.cmyk.dpdns.org",
           "markdownDescription": "MiniWorld API 数据服务器地址。ID 数据将从 `https://<地址>/api/download?type=item` 下载并缓存 10 天。"
+        },
+        "miniworld.completion": {
+          "type": "string",
+          "enum": [
+            "2.0",
+            "3.0",
+            "off"
+          ],
+          "enumDescriptions": [
+            "启用 UGC 2.0 补全：自动加载 2.0 声明（API/类型补全）与 2.0 事件补全",
+            "启用 UGC 3.0 补全：自动加载 3.0 声明（API/类型补全）与 3.0 事件补全",
+            "关闭补全：移除 MiniWorld 声明并关闭事件补全"
+          ],
+          "default": "2.0",
+          "markdownDescription": "补全模式，默认启用并基于 UGC 2.0。控制整个扩展的补全能力：\n\n- `2.0`：自动加载 2.0 声明（API/类型补全），并在 `ScriptSupportEvent([=[...]=])` 长括号内补全 2.0 事件\n- `3.0`：自动加载 3.0 声明（API/类型补全），并在 `TriggerEvent.` / `ObjectEvent.` 之后补全 3.0 事件\n- `off`：移除 MiniWorld 声明并关闭事件补全\n\n2.0 与 3.0 声明互斥，切换模式会自动替换。声明加载由扩展自动同步，无需手动管理。"
         }
       }
     },
     "commands": [
       {
-        "command": "complete.addDeclarations20",
-        "title": "MiniWorld API Description: 添加 MiniWorld UGC 2.0 声明"
+        "command": "miniworld.addDeclarations",
+        "title": "MiniWorld API Description: 添加 MiniWorld UGC 声明"
       },
       {
-        "command": "complete.removeDeclarations20",
-        "title": "MiniWorld API Description: 移除 MiniWorld UGC 2.0 声明"
-      },
-      {
-        "command": "complete.addDeclarations30",
-        "title": "MiniWorld API Description: 添加 MiniWorld UGC 3.0 声明"
-      },
-      {
-        "command": "complete.removeDeclarations30",
-        "title": "MiniWorld API Description: 移除 MiniWorld UGC 3.0 声明"
+        "command": "miniworld.clearCompletion",
+        "title": "MiniWorld API Description: 清除 MiniWorld UGC 补全"
       },
       {
         "command": "miniworld.apiSearch.focus",

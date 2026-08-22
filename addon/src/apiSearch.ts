@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import Fuse from 'fuse.js';
 
-// 类型定义 
+// 类型定义
 
 /** API 参数 */
 export interface ApiParam {
@@ -40,7 +40,7 @@ export interface ApiItem {
     sourceFile: string;
     /** 函数所在行号 */
     sourceLine: number;
-    /** 声明时的类名前缀（如 Player:getPos 的 "Player"），undefined 表示非类方法 */
+    /** 类名前缀（如 Player:getPos 的 "Player"），undefined 表示非类方法 */
     className?: string;
 }
 
@@ -49,20 +49,19 @@ export interface IdEntry {
     name: string;
     desc?: string;
 }
-/** ID 数据：ID → { name, desc }，desc 可选 */
+/** ID → { name, desc } */
 export type IdMap = Record<string, IdEntry>;
 /** ID 分类：item=道具 / actor=生物 / buff=状态 */
 export type IdCategory = 'item' | 'actor' | 'buff';
-/** ID 分类数据：分类 → ID 映射 */
+/** 分类 → ID 映射 */
 export type IdCategories = Record<IdCategory, IdMap>;
 
 /** ID 数据缓存有效期：10 天 */
 const ID_CACHE_TTL_MS = 10 * 24 * 60 * 60 * 1000;
-/** ID 数据在 Worker 上的下载类型（分类） */
+/** Worker 上可下载的 ID 分类 */
 const ID_DOWNLOAD_TYPES: IdCategory[] = ['item', 'actor', 'buff'];
 
-// 模块级正则常量 —— 避免在热路径中重复创建 RegExp 对象
-// 解析 .d.lua 文件
+// 模块级正则常量（避免热路径中重复创建 RegExp）
 const RE_CLASS_LINE = /^---\s*@class (\w+)\s*@?(.*)$/;
 const RE_FIELD_LINE = /^---\s*@field (\w+)\s+(\w+)(?:\s*@([\s\S]*))?$/;
 const RE_OTHER_ANNOTATION = /^---\s*@/;
@@ -73,10 +72,10 @@ const RE_RETURN_FULL = /^---\s*@return (\w+(?:\s*,\s*\w+)*)\s*@(.+)$/;
 const RE_RETURN_SIMPLE = /^---\s*@return (\w+(?:\s*,\s*\w+)*)$/;
 const RE_DESC_LINE = /^--- (.+)$/;
 
-// 模块级常量集合 —— 避免每次搜索都新建 Set
+// 模块级常量集合（避免每次搜索都新建 Set）
 const EXCLUDED_MODULES = new Set(['Event', 'EnumLib']);
 const HIDDEN_EVENT_PARENTS = new Set(['TriggerEvent', 'CurEventParam', 'ObjectEvent']);
-/** 共享的只读空数组 —— 避免每个展开条目都分配新的空数组 */
+/** 共享只读空数组（避免每个展开条目都分配新数组） */
 const EMPTY_PARAMS: readonly ApiParam[] = Object.freeze([]);
 const EMPTY_RETURNS: readonly ApiReturn[] = Object.freeze([]);
 const EMPTY_FIELDS: readonly ApiField[] = Object.freeze([]);
@@ -89,7 +88,6 @@ const FUSE_CACHE_MAX = 6;
 /**
  * 解析事件字段描述中的参数信息
  * 格式：描述文本 {param1:说明, param2:说明, ...}
- * 返回清洗后的描述和参数字典
  */
 function parseEventFieldDesc(raw: string): { cleanDesc: string; eventInfo: Record<string, string> | null } {
     const braceStart = raw.lastIndexOf('{');
@@ -102,9 +100,7 @@ function parseEventFieldDesc(raw: string): { cleanDesc: string; eventInfo: Recor
     const paramsStr = raw.substring(braceStart + 1, braceEnd);
     const eventInfo: Record<string, string> = {};
 
-    // 解析 key:value 对，支持 key:value 和 key:描述文本（含逗号、冒号）
-    // 思路：按逗号分割，但值中也可能含逗号，故用正则逐个提取
-    // 负向前瞻：值部分允许逗号，仅在遇到 ", key:" 模式时停止
+    // 用正则逐个提取 key:value，值中可含逗号，仅在遇到 ", key:" 时停止
     const paramRegex = /(\w[\w.]*)\s*:\s*((?:(?!\s*,\s*\w[\w.]*\s*:).)*?)(?=\s*,\s*\w[\w.]*\s*:|$)/g;
     let m: RegExpExecArray | null;
     while ((m = paramRegex.exec(paramsStr)) !== null) {
@@ -114,9 +110,7 @@ function parseEventFieldDesc(raw: string): { cleanDesc: string; eventInfo: Recor
     return { cleanDesc: cleanDesc || raw, eventInfo: Object.keys(eventInfo).length > 0 ? eventInfo : null };
 }
 
-/**
- * 从 `.d.lua` 文件中解析出所有 API 条目
- */
+/** 从 `.d.lua` 文件解析出所有 API 条目 */
 async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): Promise<ApiItem[]> {
     const items: ApiItem[] = [];
     const content = await fs.promises.readFile(filePath, 'utf-8');
@@ -125,9 +119,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
     // 去掉前缀 "MN" 和后缀，作为模块名
     const moduleName = baseName.replace(/\.d\.lua$/, '').replace(/^MN/, '');
 
-    // 解析枚举 / 事件（@field 模式）
-    // 这类文件的特征：有 `--- @class Xxx` + 若干 `--- @field`
-    // 需要找到所有 @class 块，每个块是一个枚举
+    // 解析枚举 / 事件（@class 块下的 @field）
     const isEventFile = baseName === 'MNEvent.d.lua';
     let i = 0;
     while (i < lines.length) {
@@ -136,7 +128,6 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
             const enumName = classMatch[1];
             const classDesc = classMatch[2].trim();
             const fields: ApiField[] = [];
-            // 收集 @class 下方的 @field 行
             let j = i + 1;
             while (j < lines.length) {
                 const fieldMatch = lines[j].match(RE_FIELD_LINE);
@@ -188,16 +179,12 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
     }
 
     // 解析函数 / 方法
-    // 支持三种模式：
-    //   1. function ClassName:methodName(params) return ... end
-    //   2. local funcName = function(params) return ... end
-    //   3. function funcName(params) return ... end
     i = 0;
     while (i < lines.length) {
         const line = lines[i];
         const funcMatch = line.match(RE_FUNC_LINE);
         if (funcMatch) {
-            const className = funcMatch[1]; // 类名（如 Player: 中的 Player），可能为 undefined
+            const className = funcMatch[1]; // 类名（如 Player: 中的 Player）
             const funcName = funcMatch[2] || funcMatch[3];
             if (!funcName || funcName === 'function') { i++; continue; }
 
@@ -210,7 +197,6 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
             while (j >= 0 && lines[j].trim().startsWith('---')) {
                 const commentLine = lines[j].trim();
 
-                // @param name type @desc
                 const paramMatch = commentLine.match(RE_PARAM_FULL);
                 if (paramMatch) {
                     params.unshift({
@@ -222,7 +208,6 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                     continue;
                 }
 
-                // @param name type  (无描述)
                 const paramSimple = commentLine.match(RE_PARAM_SIMPLE);
                 if (paramSimple) {
                     params.unshift({
@@ -234,7 +219,6 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                     continue;
                 }
 
-                // @return type @desc
                 const returnMatch = commentLine.match(RE_RETURN_FULL);
                 if (returnMatch) {
                     returns.unshift({
@@ -245,7 +229,6 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                     continue;
                 }
 
-                // @return type  (无描述)
                 const returnSimple = commentLine.match(RE_RETURN_SIMPLE);
                 if (returnSimple) {
                     returns.unshift({ type: returnSimple[1], desc: '' });
@@ -253,7 +236,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
                     continue;
                 }
 
-                // 纯描述行（累积为完整 Markdown，从下往上遍历故向前插入）
+                // 纯描述行（自下而上遍历，向前插入以保持顺序）
                 const descMatch = commentLine.match(RE_DESC_LINE);
                 if (descMatch && !descMatch[1].startsWith('@') && !descMatch[1].startsWith('class ')) {
                     const descLine = descMatch[1].trim();
@@ -282,9 +265,7 @@ async function parseLuaDeclarations(filePath: string, version: '2.0' | '3.0'): P
     return items;
 }
 
-/**
- * 扫描整个目录，解析所有 API
- */
+/** 扫描整个目录，解析所有 API */
 async function scanAllApis(multipleDir: string): Promise<ApiItem[]> {
     const all: ApiItem[] = [];
 
@@ -306,14 +287,14 @@ async function scanAllApis(multipleDir: string): Promise<ApiItem[]> {
             }
         }
 
-        // 额外解析 2.0 的 MNEvent.d.json（该文件仅 2.0 目录下有）
+        // 额外解析 MNEvent.d.json（仅 2.0 目录下有）
         const jsonEventPath = path.join(dir, 'MNEvent.d.json');
         try {
             await fs.promises.access(jsonEventPath);
             const items = await parseJsonEvents(jsonEventPath, version);
             for (const it of items) { all.push(it); }
         } catch (err) {
-            // ENOENT 表示文件不存在（3.0 目录），这不是错误，静默跳过
+            // 3.0 目录无此文件，ENOENT 静默跳过
             if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
                 console.warn(`解析失败: ${jsonEventPath}`, err);
             }
@@ -324,13 +305,13 @@ async function scanAllApis(multipleDir: string): Promise<ApiItem[]> {
 }
 
 /**
- * 构建类型引用映射：找出哪些类（如 CurEventParam）通过 @field 引用了其他类（如 EventDate）
- * 用于在搜索结果中显示完整路径名称，如 CurEventParam.EventDate.hour
+ * 构建类型引用映射：找出哪些类（如 CurEventParam）通过 @field 引用其他类（如 EventDate）
+ * 用于显示完整路径名称，如 CurEventParam.EventDate.hour
  */
 function buildTypeRefMap(items: ApiItem[]): Map<string, Array<{ parentName: string; fieldName: string; sourceFile: string }>> {
     const refMap = new Map<string, Array<{ parentName: string; fieldName: string; sourceFile: string }>>();
 
-    // 预构建索引：sourceFile → (name → item)，将 O(n²) 降为 O(n)
+    // 预构建 sourceFile → (name → item) 索引，将 O(n²) 降为 O(n)
     const sourceIndex = new Map<string, Map<string, ApiItem>>();
     for (const item of items) {
         if (item.fields.length === 0) { continue; }
@@ -350,7 +331,7 @@ function buildTypeRefMap(items: ApiItem[]): Map<string, Array<{ parentName: stri
         if (!nameMap) { continue; }
 
         for (const field of item.fields) {
-            // 检查 field.type 是否匹配另一个同文件中的条目名称（且该条目也有子字段）
+            // 检查 field.type 是否匹配同文件中的另一条目名（且该条目也有子字段）
             const referenced = nameMap.get(field.type);
             if (referenced) {
                 if (!refMap.has(field.type)) {
@@ -368,10 +349,7 @@ function buildTypeRefMap(items: ApiItem[]): Map<string, Array<{ parentName: stri
     return refMap;
 }
 
-/**
- * 解析事件 JSON 文件（如 2.0 的 MNEvent.d.json）
- * 按第二个点号前的部分分组，如 "Game.AnyPlayer.EnterGame" → 组名 "Game.AnyPlayer"
- */
+/** 解析事件 JSON 文件（按第二个点号前的部分分组，如 "Game.AnyPlayer.EnterGame" → "Game.AnyPlayer"） */
 async function parseJsonEvents(filePath: string, version: '2.0' | '3.0'): Promise<ApiItem[]> {
     const items: ApiItem[] = [];
     const raw = await fs.promises.readFile(filePath, 'utf-8');
@@ -383,11 +361,10 @@ async function parseJsonEvents(filePath: string, version: '2.0' | '3.0'): Promis
     }>();
 
     for (const [eventName, def] of Object.entries(parsed)) {
-        // 提取组名：取到第二个点号前，如 "Game.AnyPlayer.EnterGame" → "Game.AnyPlayer"
         const firstDot = eventName.indexOf('.');
         const secondDot = firstDot > 0 ? eventName.indexOf('.', firstDot + 1) : -1;
 
-        // 只有大于等于2个点号才分组，否则保持扁平
+        // 仅 >=2 个点号才分组，否则保持扁平
         if (secondDot > 0) {
             const groupName = eventName.substring(0, secondDot);
             const subName = eventName.substring(secondDot + 1);
@@ -424,12 +401,10 @@ async function parseJsonEvents(filePath: string, version: '2.0' | '3.0'): Promis
     }
 
     for (const [groupName, group] of groups.entries()) {
-        // 模块名取第一个点号前的部分
         const dotIdx = groupName.indexOf('.');
         const module = dotIdx > 0 ? groupName.substring(0, dotIdx) : 'Event';
 
-        // 将完整子事件数据序列化存储到每个 field 中（detail 页用）
-        // 用分隔符编码 event_info，避免修改 ApiField 接口
+        // 将子事件数据以 event| 编码序列化到 field.type，供 detail 页使用
         const fieldsWithData: ApiField[] = group.subEvents.map(se => ({
             name: se.name,
             type: se.event_info && Object.keys(se.event_info).length > 0
@@ -457,9 +432,7 @@ async function parseJsonEvents(filePath: string, version: '2.0' | '3.0'): Promis
     return items;
 }
 
-/**
- * 构建事件详情字段列表，将 event| 编码的子事件参数展开为缩进条目
- */
+/** 构建事件详情字段列表，将 event| 编码的子事件参数展开为缩进条目 */
 function buildEventDetailFields(fields: ApiField[]): ApiField[] {
     const result: ApiField[] = [];
 
@@ -510,7 +483,7 @@ interface ExpandedItem {
 }
 
 /**
- * 使用 fuse.js 进行模糊搜索，支持多字段加权匹配
+ * 使用 fuse.js 模糊搜索，支持多字段加权匹配
  * 注意：调用方负责传入已筛选的 items（已应用 version/module/kind 过滤）
  */
 function searchItems(
@@ -550,7 +523,7 @@ function searchItems(
     // 文本搜索：剥离尾部括号 ()（），如 getPos() → getPos
     const q = query.trim().toLowerCase().replace(/[（(]\s*[）)]?\s*$/, '');
 
-    // 从缓存获取或新建 Fuse 实例（避免每次按键都重建索引）
+    // 从缓存获取或新建 Fuse 实例（避免每次按键重建索引）
     const cacheKey = `${versionFilter}|${moduleFilter}|${kindFilter}`;
     let fuse: Fuse<ApiItem>;
     const cached = fuseCache.get(cacheKey);
@@ -589,12 +562,12 @@ function searchItems(
             ],
             threshold: 0.3,
             minMatchCharLength: 1,
-            // includeScore: false —— 不分配 score 包装对象
+            // 不分配 score 包装对象，以节省 CPU
             includeScore: false,
             shouldSort: true,
-            // findAllMatches: false —— 找到首匹配后短路，大幅减少 CPU
+            // 找到首匹配后短路，减少 CPU
             findAllMatches: false,
-            // 启用 ignoreLocation：允许匹配跨越字段任意位置，更适合 API 名搜索
+            // 允许匹配跨越字段任意位置，更适合 API 名搜索
             ignoreLocation: true,
         });
         // LRU 容量控制
@@ -627,23 +600,23 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
     private _idError = '';
     /** ID 数据版本戳：仅当数据变化时才向 webview 重新推送 */
     private _idDataVersion = 0;
-    /** webview 上次收到的 ID 数据版本，避免重复推送相同数据 */
+    /** webview 上次收到的 ID 数据版本 */
     private _lastSentIdVersion = -1;
 
     /** Fuse 实例缓存（实例级，避免模块级缓存永不释放） */
     private readonly _fuseCache = new Map<string, { fuse: Fuse<ApiItem>; itemsRef: ApiItem[] }>();
 
-    /** 名称索引：用于 _handleShowDetail 的 O(1) 查找，key = `${name}\0${sourceFile}` */
+    /** 名称索引：key = `${name}\0${sourceFile}`，用于 O(1) 查找 */
     private _nameIndex: Map<string, ApiItem[]> = new Map();
 
-    /** 最近一次完整搜索结果缓存（用于服务端分页时跳过重算） */
+    /** 最近一次完整搜索结果缓存（用于分页时跳过重算） */
     private _lastSearchKey: string | null = null;
     private _lastSearchResults: ExpandedItem[] = [];
 
-    /** 已向 webview 推送过的 ID 数据版本，避免 initData 中重复推送 */
+    /** initData 中已推送过的 ID 数据版本，避免重复推送 */
     private _initDataSentIdVersion = -1;
 
-    /** 资源缓存：marked.umd.js / SVG 内容（仅按扩展版本变化） */
+    /** 资源缓存：marked.umd.js / SVG 内容 */
     private static _assetCache: {
         extensionPath: string;
         searchSvg: string;
@@ -672,7 +645,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             this._allItems = await scanAllApis(multipleDir);
             this._typeRefMap = buildTypeRefMap(this._allItems);
             this._buildNameIndex();
-            // 数据已更新，失效搜索结果缓存，避免首次打开时用空结果命中缓存导致列表不刷新
+            // 数据已更新，失效搜索结果缓存，避免首次打开用空结果命中缓存
             this._lastSearchKey = null;
             this._lastSearchResults = [];
         } catch (err) {
@@ -680,7 +653,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             this._allItems = [];
             this._typeRefMap = new Map();
             this._nameIndex = new Map();
-            return; // 失败时不标记 _initialized，后续调用可重试
+            return; // 失败时不标记 _initialized，后续可重试
         }
         this._initialized = true;
         // 异步加载 ID 数据（失败不阻塞搜索）
@@ -689,7 +662,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
         });
     }
 
-    /** 构建 name 索引：`${name}\0${sourceFile}` → 该位置的所有条目（O(1) 查找） */
+    /** 构建 name 索引：`${name}\0${sourceFile}` → 该位置的所有条目 */
     private _buildNameIndex(): void {
         const idx = new Map<string, ApiItem[]>();
         for (const it of this._allItems) {
@@ -709,7 +682,6 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             this._fuseCache.clear();
             this._typeRefMap = buildTypeRefMap(this._allItems);
             this._buildNameIndex();
-            // 清空搜索缓存
             this._lastSearchKey = null;
             this._lastSearchResults = [];
             this._initialized = true;
@@ -826,7 +798,6 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
     /** 向 webview 推送 ID 数据（仅当版本变化时） */
     private _sendIdData(): void {
         if (this._lastSentIdVersion === this._idDataVersion) {
-            // 数据未变化，无需重发
             return;
         }
         this._lastSentIdVersion = this._idDataVersion;
@@ -858,7 +829,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
     ): Promise<void> {
         this._view = webviewView;
 
-        // 先设置 webview HTML 让用户看到 loading，再异步初始化数据
+        // 先设置 HTML 显示 loading，再异步初始化数据
         webviewView.webview.options = {
             enableScripts: true,
             localResourceRoots: [
@@ -870,7 +841,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
 
         webviewView.webview.html = await this._getHtmlContent(webviewView.webview);
 
-        // 注册消息处理器（disposable 已记录到 _disposables，便于清理）
+        // 注册消息处理器
         const msgDisposable = webviewView.webview.onDidReceiveMessage(msg => this._onMessage(msg));
         this._disposables.push(msgDisposable);
         webviewView.onDidDispose(() => {
@@ -888,7 +859,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
     private _onMessage(msg: any): void {
         switch (msg.type) {
             case 'ready':
-                // init 尚未完成时不推送空数据，避免闪现“未找到匹配结果”；
+                // init 未完成时不推送空数据，避免闪现“未找到匹配结果”；
                 // init 完成后由 resolveWebviewView 的 init().then() 统一推送
                 if (this._initialized) { this._sendInitData(); }
                 break;
@@ -904,7 +875,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
                 });
                 break;
             case 'getIds':
-                // webview 已收到 initData，仅在版本过期时重新推送
+                // 仅在版本过期时重新推送
                 this._sendIdData();
                 break;
         }
@@ -940,10 +911,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
         this._view?.webview.postMessage(payload);
     }
 
-    /**
-     * 服务端分页搜索：仅向 webview 推送当前页的 25 条结果，
-     * 避免每次按键都序列化/传输数千条结果。
-     */
+    /** 服务端分页搜索：仅向 webview 推送当前页的结果 */
     private _handleSearch(query: string, version: string, module: string, kind: string, page: number, pageSize: number): void {
         const searchKey = `${query}\0${version}\0${module}\0${kind}`;
 
@@ -971,16 +939,12 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
         });
     }
 
-    /**
-     * 执行完整搜索 + 展开 + 前缀去重，返回完整的 ExpandedItem 数组。
-     * 调用方负责分页切片。
-     */
+    /** 执行完整搜索 + 展开 + 前缀去重，返回完整结果数组（调用方负责分页切片） */
     private _buildExpandedResults(query: string, version: string, module: string, kind: string): ExpandedItem[] {
         const { results } = searchItems(this._allItems, query, version, module, kind, this._fuseCache);
         const q = query.trim().toLowerCase();
 
-        // 对于点号分隔的查询（如 "EventDate.hour"），fuse.js 的模糊匹配无法将长查询
-        // 匹配到字段名较短的条目上，导致 CurEventParam / EventDate 等条目丢失。
+        // 点号分隔的查询（如 "EventDate.hour"）无法被 fuse 直接匹配到字段名较短的条目，
         // 此处补充搜索：找出字段名/描述匹配任一查询片段的条目。
         const querySegments = q ? q.split('.').filter(Boolean) : [];
         let finalResults = results;
@@ -1016,22 +980,18 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             const isJsonEvent = item.sourceFile.endsWith('.json');
 
             if ((item.kind === 'enum' || item.kind === 'event') && item.fields.length > 0 && !isJsonEvent) {
-                // 每个字段展开为独立条目
                 let matchedAnyField = false;
 
                 // 检查当前类型是否被其他类通过 @field 引用（如 EventDate 被 CurEventParam 引用）
                 const parents = this._typeRefMap.get(item.name);
                 const parentRef = parents?.find(p => p.sourceFile === item.sourceFile);
 
-                // 将查询按点号拆分为多个片段，支持逐段匹配（如 "EventDate.hour" 匹配 hour 字段）
-                // querySegments 已在上方计算，此处复用
-
                 for (const field of item.fields) {
                     // 有搜索词时只包含匹配的字段（简单字符级模糊匹配）
                     const lowerFieldName = field.name.toLowerCase();
                     const lowerFieldDesc = field.desc.toLowerCase();
                     if (q && !lowerFieldName.includes(q) && !lowerFieldDesc.includes(q)) {
-                        // 对于点号分隔的查询，检查是否任一字段名片段匹配
+                        // 点号分隔查询：检查是否任一字段名片段匹配
                         const segmentMatch = querySegments.some(seg =>
                             lowerFieldName.includes(seg) || lowerFieldDesc.includes(seg)
                         );
@@ -1041,8 +1001,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
                     }
                     matchedAnyField = true;
 
-                    // 如果该类型是子结构（被父类引用），使用父路径作为前缀
-                    // 如 EventDate.hour → CurEventParam.EventDate.hour
+                    // 子结构类型（被父类引用）用父路径作为前缀，如 CurEventParam.EventDate.hour
                     const prefix = parentRef
                         ? `${parentRef.parentName}.${parentRef.fieldName}`
                         : item.name;
@@ -1063,9 +1022,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
                         fields: EMPTY_FIELDS as ApiField[],
                     });
                 }
-                // 如果字段全部被过滤（搜索词不匹配任何字段），至少保留类本身
-                // 但隐藏事件父类（TriggerEvent / CurEventParam / ObjectEvent）
-                // 以及被父类引用的子结构类型（如 EventDate）
+                // 字段全部被过滤时至少保留类本身，但隐藏事件父类（TriggerEvent 等）及被父类引用的子结构
                 if (!matchedAnyField && !HIDDEN_EVENT_PARENTS.has(item.name) && !parentRef) {
                     expanded.push({
                         name: item.name,
@@ -1098,7 +1055,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
                     fieldCount: 0,
                     sourceFile: item.sourceFile,
                     sourceLine: item.sourceLine,
-                    // 简介仅展示前 5 个参数与前 3 个返回值的摘要
+                    // 简介仅展示前 5 个参数与前 3 个返回值
                     parameters: item.parameters.slice(0, 5),
                     returns: item.returns.slice(0, 3),
                     fields: EMPTY_FIELDS as ApiField[],
@@ -1106,15 +1063,12 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             }
         }
 
-        // 过滤冗余的中间父级路径：若同时存在 "A.B" 和 "A.B.C"，则 "A.B" 是冗余的
-        // 利用排序后前缀相邻的特性将 O(n²) 降为 O(n log n)
+        // 过滤冗余的中间父级路径：若同时存在 "A.B" 和 "A.B.C"，则 "A.B" 冗余
         if (expanded.length > 1) {
-            // 原地排序，避免额外分配 [...expanded]
             expanded.sort((a, b) => a.name.localeCompare(b.name));
             const filtered: ExpandedItem[] = [];
             for (let i = 0; i < expanded.length; i++) {
                 const cur = expanded[i];
-                // 如果下一个条目以 cur.name + '.' 开头，则 cur 是冗余前缀
                 const next = expanded[i + 1];
                 if (!next || !next.name.startsWith(cur.name + '.')) {
                     filtered.push(cur);
@@ -1140,8 +1094,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             return bare;
         };
 
-        // 1. 精确匹配（name + sourceFile） —— 利用 name 索引，O(1) 平均查找
-        // 进一步过滤 sourceLine（多条同名时取匹配行号的）
+        // 1. 精确匹配（name + sourceFile），进一步按 sourceLine 过滤
         const candidates = this._nameIndex.get(`${msg.name}\0${msg.sourceFile}`);
         let item: ApiItem | undefined = candidates?.find(i => i.sourceLine === msg.sourceLine);
 
@@ -1152,12 +1105,12 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             item = bareCands?.find(i => i.sourceLine === msg.sourceLine);
         }
 
-        // 3. 精确匹配失败，按 name + sourceFile 找（JSON 事件行号均为 -1）
+        // 3. 精确匹配失败，按 name + sourceFile 取首个（JSON 事件行号均为 -1）
         if (!item && candidates && candidates.length > 0) {
             item = candidates[0];
         }
 
-        // 4. 仍失败 → 可能是展开的字段条目 (name 包含 .)，找到父类再取具体字段
+        // 4. 仍失败 → 可能是展开的字段条目（name 含 .），找到父类再取具体字段
         let fieldDetail: { name: string; type: string; desc: string } | undefined;
         if (!item) {
             const dotIdx = msg.name.lastIndexOf('.');
@@ -1167,7 +1120,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
                 let parentCands = this._nameIndex.get(`${parentName}\0${msg.sourceFile}`);
                 let parent = parentCands?.[0];
 
-                // 处理嵌套路径如 CurEventParam.EventDate.hour → 取倒数第二段作为类名
+                // 嵌套路径如 CurEventParam.EventDate.hour → 取倒数第二段作为类名
                 if (!parent) {
                     const parts = msg.name.split('.');
                     if (parts.length >= 3) {
@@ -1200,17 +1153,16 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
         let detailFields = item.fields;
 
         if (isEventSource && !fieldDetail) {
-            // 对整个条目（分组事件 / 事件类）展开子事件列表及参数
+            // 对整个条目展开子事件列表及参数
             detailFields = buildEventDetailFields(item.fields);
         } else if (fieldDetail) {
-            // 单个展开的字段条目（如 EventDate.hour）
-            // 始终展示字段本身的名称、类型和描述
+            // 单个展开的字段条目：展示字段本身的名称、类型和描述
             detailFields = [{
                 name: fieldDetail.name,
                 type: fieldDetail.type.startsWith('event|') ? 'event' : fieldDetail.type,
                 desc: fieldDetail.desc,
             }];
-            // 如果是事件类型，额外展开子参数
+            // 事件类型额外展开子参数
             if (fieldDetail.type.startsWith('event|')) {
                 try {
                     const eventInfo = JSON.parse(fieldDetail.type.substring(6));
@@ -1245,8 +1197,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
 
     /**
      * 资源预加载：marked.umd.js + SVG + search.html。
-     * 首次调用读取磁盘并缓存到模块级静态变量；后续直接复用，
-     * 避免每次 webview 解析都重新读取 6 个文件。
+     * 首次读取磁盘并缓存，后续直接复用，避免每次 webview 解析都重新读取。
      */
     private static async _loadAssets(extensionUri: vscode.Uri): Promise<NonNullable<typeof ApiSearchProvider._assetCache>> {
         if (ApiSearchProvider._assetCache && ApiSearchProvider._assetCache.extensionPath === extensionUri.fsPath) {
@@ -1266,7 +1217,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             }
         };
 
-        // 并行读取所有 6 个文件
+        // 并行读取所有文件
         const [searchSvg, closeSvg, copySvg, checkSvg, markedScriptRead, htmlRead] = await Promise.all([
             readSvg('search.svg'),
             readSvg('close.svg'),
@@ -1312,7 +1263,7 @@ export class ApiSearchProvider implements vscode.WebviewViewProvider, vscode.Dis
             .replace(/\{\{closeSvg\}\}/g, assets.closeSvg)
             .replace(/\{\{copySvg\}\}/g, assets.copySvg)
             .replace(/\{\{checkSvg\}\}/g, assets.checkSvg)
-            // HTML 转义版本（用于 data-* 属性，避免双引号破坏结构）
+            // HTML 转义版本（用于 data-* 属性）
             .replace(/\{\{copySvgAttr\}\}/g, copySvgAttr)
             .replace(/\{\{checkSvgAttr\}\}/g, checkSvgAttr)
             .replace(/\{\{searchSvgAttr\}\}/g, searchSvgAttr)

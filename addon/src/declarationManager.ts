@@ -1,18 +1,10 @@
-import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+import { COMPLETION_MODE_SETTING, getCompletionMode, type CompletionMode } from './completionMode';
+
 const LUA_CONFIG_SECTION = 'Lua';
 const LIBRARY_KEY = 'workspace.library';
-const SKIP_PROMPT_KEY = 'skipDeclarationPromptUntil';
-const SKIP_FOREVER_KEY = 'skipDeclarationPromptForever';
-const SKIP_HOURS = 4;
-
-// 内存中的跳过标记，防止 globalState 异步写入延迟导致重复弹出提示
-let skipUntilCached = 0;
-let skipForeverCached = false;
-/** 标记当前是否已有提示框在显示，防止快速打开多个文件时堆叠 */
-let isPromptPending = false;
 
 function getTypesDir20(context: vscode.ExtensionContext): string {
     return context.asAbsolutePath(path.join('addon', 'types', '2.0'));
@@ -33,41 +25,28 @@ function normalizePath(p: string): string {
     return path.normalize(p).toLowerCase();
 }
 
-function addDeclarations(typesDir: string, version: string = '', target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global): Promise<void> {
-    if (!fs.existsSync(typesDir)) {
-        vscode.window.showErrorMessage(`声明目录不存在: ${typesDir}`);
-        return Promise.resolve();
+/** 作用域显示名称 */
+function scopeLabel(target: vscode.ConfigurationTarget): string {
+    switch (target) {
+        case vscode.ConfigurationTarget.WorkspaceFolder:
+            return '工作区文件夹';
+        case vscode.ConfigurationTarget.Workspace:
+            return '工作区';
+        default:
+            return '全局';
     }
+}
 
-    const luaConfig = vscode.workspace.getConfiguration(LUA_CONFIG_SECTION);
-    const inspected = luaConfig.inspect<string[]>(LIBRARY_KEY);
-    const library = luaConfig.get<string[]>(LIBRARY_KEY, []);
-
-    const normalizedTypesDir = normalizePath(typesDir);
-    if (library.some(entry => normalizePath(entry) === normalizedTypesDir)) {
-        vscode.window.showInformationMessage(`MiniWorld UGC ${version} 声明路径已存在，无需重复添加`);
-        return Promise.resolve();
+/** 作用域优先级数值（越大优先级越高：工作区文件夹 > 工作区 > 全局） */
+function scopePriority(target: vscode.ConfigurationTarget): number {
+    switch (target) {
+        case vscode.ConfigurationTarget.WorkspaceFolder:
+            return 2;
+        case vscode.ConfigurationTarget.Workspace:
+            return 1;
+        default:
+            return 0;
     }
-
-    // 互斥检查：2.0 与 3.0 声明不可共存
-    const base = path.dirname(typesDir);
-    const otherDir = path.join(base, version === '2.0' ? '3.0' : '2.0');
-    const otherVersion = version === '2.0' ? '3.0' : '2.0';
-    const normalizedOther = normalizePath(otherDir);
-
-    if (library.some(entry => normalizePath(entry) === normalizedOther)) {
-        vscode.window.showErrorMessage(`MiniWorld UGC ${otherVersion} 声明已存在，不可同时添加 ${version} 声明`);
-        return Promise.resolve();
-    }
-
-    // 仅获取目标作用域的原始值，避免将合并值写入特定作用域
-    const targetArray = getScopeArray(inspected, target);
-
-    return Promise.resolve(
-        luaConfig.update(LIBRARY_KEY, [...targetArray, typesDir], target)
-    )
-        .then(() => void vscode.window.showInformationMessage(`MiniWorld UGC ${version} 声明文件添加成功！`))
-        .catch((err: Error) => void vscode.window.showErrorMessage(`添加失败: ${err.message}`));
 }
 
 /** 从 inspect 结果中提取指定作用域的原始数组 */
@@ -87,224 +66,319 @@ function getScopeArray(inspected: { globalValue?: string[]; workspaceValue?: str
     }
 }
 
-function removeDeclarations(typesDir: string, version: string = '', target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global): Promise<void> {
-    if (!fs.existsSync(typesDir)) {
-        vscode.window.showWarningMessage(`声明目录不存在，将尝试清理残留配置: ${typesDir}`);
-    }
-
-    const luaConfig = vscode.workspace.getConfiguration(LUA_CONFIG_SECTION);
-    const inspected = luaConfig.inspect<string[]>(LIBRARY_KEY);
-
-    // 仅获取目标作用域的原始值，避免从合并值中移除导致跨作用域误删
-    const targetArray = getScopeArray(inspected, target);
-
-    const normalizedTypesDir = normalizePath(typesDir);
-    const index = targetArray.findIndex(entry => normalizePath(entry) === normalizedTypesDir);
-    if (index === -1) {
-        vscode.window.showInformationMessage(`MiniWorld UGC ${version} 声明路径不在该作用域中，无需移除`);
-        return Promise.resolve();
-    }
-
-    const newLibrary = [...targetArray];
-    newLibrary.splice(index, 1);
-
-    return Promise.resolve(
-        luaConfig.update(LIBRARY_KEY, newLibrary, target)
-    )
-        .then(() => void vscode.window.showInformationMessage(`MiniWorld UGC ${version} 声明文件移除成功！`))
-        .catch((err: Error) => void vscode.window.showErrorMessage(`移除失败: ${err.message}`));
+function arraysEqual(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-/**
- * 根据操作类型检查各范围是否存在声明路径，仅展示可操作的范围选项。
- * @param typesDir - 目标声明目录
- * @param action - 'add' 仅显示未添加的范围；'remove' 仅显示已添加的范围
- * @returns 用户选择的范围，或 `undefined` 表示取消
- */
-async function pickConfigurationTarget(typesDir: string, action: 'add' | 'remove'): Promise<vscode.ConfigurationTarget | undefined> {
-    const luaConfig = vscode.workspace.getConfiguration(LUA_CONFIG_SECTION);
-    const inspected = luaConfig.inspect<string[]>(LIBRARY_KEY);
-    const normalizedDir = normalizePath(typesDir);
 
-    const hasGlobal = inspected?.globalValue?.some(entry => normalizePath(entry) === normalizedDir) ?? false;
-    const hasWorkspace = inspected?.workspaceValue?.some(entry => normalizePath(entry) === normalizedDir) ?? false;
-    const hasWorkspaceFolder = inspected?.workspaceFolderValue?.some(entry => normalizePath(entry) === normalizedDir) ?? false;
+/** 用于读取有效配置的作用域（包含 WorkspaceFolder 以兼容旧版本设置） */
+const ALL_SCOPES: vscode.ConfigurationTarget[] = [
+    vscode.ConfigurationTarget.WorkspaceFolder,
+    vscode.ConfigurationTarget.Workspace,
+    vscode.ConfigurationTarget.Global,
+];
+
+/** 当前生效的 miniworld.completion 设置信息（按作用域优先级取最高者） */
+interface EffectiveCompletionMode {
+    mode: CompletionMode;
+    scope: vscode.ConfigurationTarget | null;
+}
+
+/** 按作用域优先级判断当前生效的补全模式来源 */
+function getEffectiveCompletionMode(): EffectiveCompletionMode {
+    const config = vscode.workspace.getConfiguration();
+    const inspected = config.inspect<string>(COMPLETION_MODE_SETTING);
+
+    for (const target of ALL_SCOPES) {
+        const raw = getScopeStringValue(inspected, target);
+        if (raw === '2.0' || raw === '3.0' || raw === 'off') {
+            return { mode: raw, scope: target };
+        }
+    }
+    return { mode: '2.0', scope: null };
+}
+
+/** 从 inspect 结果中提取指定作用域的原始字符串值 */
+function getScopeStringValue(inspected: { globalValue?: string; workspaceValue?: string; workspaceFolderValue?: string } | undefined, target: vscode.ConfigurationTarget): string | undefined {
+    if (!inspected) {
+        return undefined;
+    }
+    switch (target) {
+        case vscode.ConfigurationTarget.Global:
+            return inspected.globalValue;
+        case vscode.ConfigurationTarget.Workspace:
+            return inspected.workspaceValue;
+        case vscode.ConfigurationTarget.WorkspaceFolder:
+            return inspected.workspaceFolderValue;
+        default:
+            return undefined;
+    }
+}
+
+/** 选择补全模式设置的作用域（始终列出工作区和全局） */
+async function pickConfigurationTarget(version: '2.0' | '3.0'): Promise<vscode.ConfigurationTarget | undefined> {
+    const config = vscode.workspace.getConfiguration();
+    const inspected = config.inspect<string>(COMPLETION_MODE_SETTING);
+
+    const globalDesc = inspected?.globalValue === version ? '当前已设置' : '应用于所有工作区';
+    const workspaceDesc = inspected?.workspaceValue === version ? '当前已设置' : '保存到 .vscode/settings.json';
 
     interface ScopeItem extends vscode.QuickPickItem {
         target: vscode.ConfigurationTarget;
     }
 
-    const items: ScopeItem[] = [];
-
-    if (action === 'add') {
-        if (!hasGlobal) {
-            items.push({ label: '全局 (Global)', description: '应用于所有工作区', target: vscode.ConfigurationTarget.Global });
-        }
-        if (!hasWorkspace) {
-            items.push({ label: '工作区 (Workspace)', description: '保存到 .vscode/settings.json', target: vscode.ConfigurationTarget.Workspace });
-        }
-        if (!hasWorkspaceFolder) {
-            items.push({ label: '工作区文件夹 (WorkspaceFolder)', description: '保存到工作区文件夹设置', target: vscode.ConfigurationTarget.WorkspaceFolder });
-        }
-    } else {
-        if (hasGlobal) {
-            items.push({ label: '全局 (Global)', description: '应用于所有工作区', target: vscode.ConfigurationTarget.Global });
-        }
-        if (hasWorkspace) {
-            items.push({ label: '工作区 (Workspace)', description: '保存到 .vscode/settings.json', target: vscode.ConfigurationTarget.Workspace });
-        }
-        if (hasWorkspaceFolder) {
-            items.push({ label: '工作区文件夹 (WorkspaceFolder)', description: '保存到工作区文件夹设置', target: vscode.ConfigurationTarget.WorkspaceFolder });
-        }
-    }
-
-    if (items.length === 0) {
-        if (action === 'add') {
-            vscode.window.showInformationMessage('所有范围内均已添加该声明路径，无需重复添加');
-        } else {
-            vscode.window.showInformationMessage('未在任何范围内找到该声明路径，无需移除');
-        }
-        return undefined;
-    }
-
-    const placeHolder = action === 'add' ? '选择添加声明路径的范围' : '选择移除声明路径的范围';
+    const items: ScopeItem[] = [
+        { label: '工作区 (Workspace)', description: workspaceDesc, target: vscode.ConfigurationTarget.Workspace },
+        { label: '全局 (Global)', description: globalDesc, target: vscode.ConfigurationTarget.Global },
+    ];
 
     const selected = await vscode.window.showQuickPick(items, {
-        placeHolder,
+        placeHolder: `选择 UGC ${version} 补全模式的设置范围`,
         ignoreFocusOut: true,
     });
 
     return selected?.target;
 }
 
-function checkDeclarationsOnOpen(document: vscode.TextDocument, context: vscode.ExtensionContext): void {
+/**
+ * 迁移旧版本在 WorkspaceFolder 作用域设置的 miniworld.completion 到 Workspace 作用域，
+ * 并清除所有 WorkspaceFolder 作用域中的残留值。
+ * 仅在 Workspace 作用域未设置时才写入迁移值，避免覆盖用户已有的 Workspace 设置。
+ */
+async function migrateWorkspaceFolderSettings(): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        return;
+    }
+
+    const config = vscode.workspace.getConfiguration();
+    const inspected = config.inspect<string>(COMPLETION_MODE_SETTING);
+    const workspaceValue = inspected?.workspaceValue;
+
+    // 收集所有 WorkspaceFolder 作用域中有效的 miniworld.completion 值
+    let folderValueToMigrate: CompletionMode | undefined;
+    const clearUpdates: Thenable<void>[] = [];
+
+    for (const folder of folders) {
+        const folderConfig = vscode.workspace.getConfiguration(undefined, folder);
+        const folderInspected = folderConfig.inspect<string>(COMPLETION_MODE_SETTING);
+        const val = folderInspected?.workspaceFolderValue;
+        if (val === '2.0' || val === '3.0' || val === 'off') {
+            if (folderValueToMigrate === undefined) {
+                folderValueToMigrate = val;
+            }
+            clearUpdates.push(
+                folderConfig.update(COMPLETION_MODE_SETTING, undefined, vscode.ConfigurationTarget.WorkspaceFolder)
+            );
+        }
+    }
+
+    if (folderValueToMigrate === undefined) {
+        return; // WorkspaceFolder 作用域没有需要迁移的设置
+    }
+
+    // 仅在 Workspace 作用域未设置时才写入迁移值
+    if (!workspaceValue) {
+        await Promise.all([
+            config.update(COMPLETION_MODE_SETTING, folderValueToMigrate, vscode.ConfigurationTarget.Workspace),
+            ...clearUpdates,
+        ]);
+    } else {
+        // Workspace 已有设置，仅清除 WorkspaceFolder 残留
+        await Promise.all(clearUpdates);
+    }
+}
+
+
+/**
+ * 按补全模式自动应用声明配置（`miniworld.completion` 为唯一数据源）：
+ * - '2.0' / '3.0'：将对应版本声明加载到 Lua 语言服务（仅写入全局作用域）
+ * - 'off'：移除全局作用域中的 MiniWorld 声明
+ * 同时清理工作区/工作区文件夹作用域中由旧版本插件写入的 `Lua.workspace.library` 条目。
+ */
+async function ensureCompletionDeclarations(context: vscode.ExtensionContext, mode: CompletionMode, _prompt: boolean): Promise<void> {
+    const dir20 = getTypesDir20(context);
+    const dir30 = getTypesDir30(context);
+    const luaConfig = vscode.workspace.getConfiguration(LUA_CONFIG_SECTION);
+    const inspected = luaConfig.inspect<string[]>(LIBRARY_KEY);
+
+    const updates: Thenable<void>[] = [];
+
+    if (mode === 'off') {
+        // 仅从全局作用域移除 MiniWorld 声明
+        const globalArr = inspected?.globalValue ?? [];
+        const next = globalArr.filter(entry => {
+            const n = normalizePath(entry);
+            return n !== normalizePath(dir20) && n !== normalizePath(dir30);
+        });
+        if (!arraysEqual(next, globalArr)) {
+            updates.push(luaConfig.update(LIBRARY_KEY, next.length > 0 ? next : undefined, vscode.ConfigurationTarget.Global));
+        }
+    } else {
+        const targetDir = mode === '2.0' ? dir20 : dir30;
+        const otherDir = mode === '2.0' ? dir30 : dir20;
+
+        // 仅操作全局作用域：移除冲突版本声明路径，追加目标版本声明路径
+        const globalArr = inspected?.globalValue ?? [];
+        const next = globalArr.filter(entry => normalizePath(entry) !== normalizePath(otherDir));
+        if (!next.some(entry => normalizePath(entry) === normalizePath(targetDir))) {
+            next.push(targetDir);
+        }
+        if (!arraysEqual(next, globalArr)) {
+            updates.push(luaConfig.update(LIBRARY_KEY, next, vscode.ConfigurationTarget.Global));
+        }
+    }
+
+    // 迁移清理：移除工作区作用域中由旧版本插件写入的条目
+    const wsArr = getScopeArray(inspected, vscode.ConfigurationTarget.Workspace);
+    const wsCleaned = wsArr.filter(entry => {
+        const n = normalizePath(entry);
+        return n !== normalizePath(dir20) && n !== normalizePath(dir30);
+    });
+    if (!arraysEqual(wsCleaned, wsArr)) {
+        updates.push(luaConfig.update(LIBRARY_KEY, wsCleaned.length > 0 ? wsCleaned : undefined, vscode.ConfigurationTarget.Workspace));
+    }
+
+    // 迁移清理：逐文件夹移除工作区文件夹作用域中由旧版本插件写入的条目
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders) {
+        for (const folder of folders) {
+            const folderConfig = vscode.workspace.getConfiguration(LUA_CONFIG_SECTION, folder);
+            const folderInspected = folderConfig.inspect<string[]>(LIBRARY_KEY);
+            const arr = folderInspected?.workspaceFolderValue ?? [];
+            const cleaned = arr.filter(entry => {
+                const n = normalizePath(entry);
+                return n !== normalizePath(dir20) && n !== normalizePath(dir30);
+            });
+            if (!arraysEqual(cleaned, arr)) {
+                updates.push(folderConfig.update(LIBRARY_KEY, cleaned.length > 0 ? cleaned : undefined, vscode.ConfigurationTarget.WorkspaceFolder));
+            }
+        }
+    }
+
+    await Promise.all(updates);
+}
+
+/** 打开 Lua 文件时按补全模式自动应用声明（幂等） */
+function applyCompletionOnOpen(document: vscode.TextDocument, context: vscode.ExtensionContext): void {
     if (document.languageId !== 'lua') {
         return;
     }
-
-    const luaConfig = vscode.workspace.getConfiguration(LUA_CONFIG_SECTION);
-    const library = luaConfig.get<string[]>(LIBRARY_KEY, []);
-
-    const dir20 = getTypesDir20(context);
-    const dir30 = getTypesDir30(context);
-
-    const normalizedDir20 = normalizePath(dir20);
-    const normalizedDir30 = normalizePath(dir30);
-    const has20 = library.some(entry => normalizePath(entry) === normalizedDir20);
-    const has30 = library.some(entry => normalizePath(entry) === normalizedDir30);
-
-    // 如果某个声明已存在，其冲突版本不可添加，无需提示
-    if (has20 || has30) {
+    const mode = getCompletionMode();
+    if (mode === 'off') {
         return;
     }
-
-    // 检查是否已选择永不提醒，或在暂不添加的冷却期内
-    // 优先检查内存缓存（同步），再回退到 globalState（可能因异步写入延迟而滞后）
-    if (skipForeverCached || context.globalState.get<boolean>(SKIP_FOREVER_KEY, false)) {
-        return;
-    }
-    const skipUntil = skipUntilCached > 0 ? skipUntilCached : context.globalState.get<number>(SKIP_PROMPT_KEY, 0);
-    if (Date.now() < skipUntil) {
-        return;
-    }
-
-    // 已有提示框在显示时不再重复弹出
-    if (isPromptPending) {
-        return;
-    }
-
-    const options: (vscode.QuickPickItem & { action: string })[] = [
-        { label: '不添加声明', description: '4 小时内不再提示', action: 'none' },
-        { label: '永不提醒', description: '不再显示此提示', action: 'never' },
-        { label: '添加 2.0 声明', description: `添加 ${dir20}`, action: '20' },
-        { label: '添加 3.0 声明', description: `添加 ${dir30}`, action: '30' },
-    ];
-
-    isPromptPending = true;
-    vscode.window.showQuickPick(options, {
-        placeHolder: '检测到未添加 MiniWorld UGC 声明，是否添加？',
-        ignoreFocusOut: true,
-    }).then(async (selected) => {
-        isPromptPending = false;
-        if (!selected) {
-            return;
-        }
-
-        if (selected.action === 'none') {
-            // 4 小时内不再提示（先更新内存缓存，再异步写入持久化）
-            skipUntilCached = Date.now() + SKIP_HOURS * 60 * 60 * 1000;
-            await context.globalState.update(SKIP_PROMPT_KEY, skipUntilCached);
-        } else if (selected.action === 'never') {
-            skipForeverCached = true;
-            await context.globalState.update(SKIP_FOREVER_KEY, true);
-        } else if (selected.action === '20') {
-            addDeclarations(dir20, '2.0');
-        } else if (selected.action === '30') {
-            addDeclarations(dir30, '3.0');
-        }
-    });
+    // 打开文件时静默确保声明
+    void ensureCompletionDeclarations(context, mode, false);
 }
 
 /**
  * 注册所有声明管理相关的命令和事件监听器。
+ *
+ * 架构设计：
+ * - `miniworld.completion` 是唯一数据源，控制补全版本（2.0 / 3.0 / off）
+ * - 用户通过命令或设置修改 `miniworld.completion`，插件自动同步 `Lua.workspace.library`（仅全局作用域）
+ * - `.vscode/settings.json` 中仅包含 `miniworld.completion`，不直接暴露 `Lua.workspace.library`
+ *
  * @returns 需要添加到 context.subscriptions 的 Disposable 数组
  */
 export function registerDeclarationCommands(context: vscode.ExtensionContext): vscode.Disposable[] {
     const disposables: vscode.Disposable[] = [];
 
-    // 注册命令：添加/移除 2.0 声明
+    // 迁移旧版本 WorkspaceFolder 作用域的 miniworld.completion 设置到 Workspace 作用域（异步，不阻塞命令注册）
+    void migrateWorkspaceFolderSettings();
+
+    // 激活时立即按补全模式应用声明配置
+    void ensureCompletionDeclarations(context, getCompletionMode(), true);
+
+    // 补全模式设置变化时自动应用声明配置
     disposables.push(
-        vscode.commands.registerCommand('complete.addDeclarations20', async () => {
-            const typesDir = getTypesDir20(context);
-            const target = await pickConfigurationTarget(typesDir, 'add');
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration(COMPLETION_MODE_SETTING)) {
+                void ensureCompletionDeclarations(context, getCompletionMode(), true);
+            }
+        })
+    );
+
+    // 注册命令：添加 MiniWorld UGC 声明
+    // 流程：选择版本 → 选择作用域 → 设置 miniworld.completion → 自动触发 ensureCompletionDeclarations 同步全局 Lua.workspace.library
+    disposables.push(
+        vscode.commands.registerCommand('miniworld.addDeclarations', async () => {
+            const items: (vscode.QuickPickItem & { version: '2.0' | '3.0' })[] = [
+                { label: 'UGC 2.0', description: '添加 MiniWorld UGC 2.0 声明', version: '2.0' },
+                { label: 'UGC 3.0', description: '添加 MiniWorld UGC 3.0 声明', version: '3.0' },
+            ];
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: '选择要添加的声明版本',
+                ignoreFocusOut: true,
+            });
+            if (!selected) { return; }
+
+            const target = await pickConfigurationTarget(selected.version);
             if (target === undefined) { return; }
-            await addDeclarations(typesDir, '2.0', target);
+
+            // 作用域优先级冲突检查：当前生效的补全模式来自更高优先级作用域
+            const effective = getEffectiveCompletionMode();
+            if (effective.mode !== selected.version && effective.mode !== 'off' && effective.scope !== null) {
+                if (scopePriority(target) < scopePriority(effective.scope)) {
+                    // 目标作用域优先级更低：设置后冲突版本仍会生效，提示用户
+                    const proceed = '仍然设置';
+                    const action = await vscode.window.showWarningMessage(
+                        `当前 ${scopeLabel(effective.scope!)} 已启用 UGC ${effective.mode} 补全（优先级更高），在 ${scopeLabel(target)} 设置 UGC ${selected.version} 不会生效。是否仍然设置？`,
+                        proceed,
+                        '取消'
+                    );
+                    if (action !== proceed) { return; }
+                }
+            }
+
+            // 设置变化会触发 ensureCompletionDeclarations，自动同步全局 Lua.workspace.library
+            await vscode.workspace.getConfiguration().update(COMPLETION_MODE_SETTING, selected.version, target);
+            vscode.window.showInformationMessage(`MiniWorld UGC ${selected.version} 补全已启用（${scopeLabel(target)}）`);
         })
     );
 
+    // 注册命令：清除补全（选择作用域，清除该作用域的 miniworld.completion 设置）
     disposables.push(
-        vscode.commands.registerCommand('complete.removeDeclarations20', async () => {
-            const typesDir = getTypesDir20(context);
-            const target = await pickConfigurationTarget(typesDir, 'remove');
-            if (target === undefined) { return; }
-            await removeDeclarations(typesDir, '2.0', target);
+        vscode.commands.registerCommand('miniworld.clearCompletion', async () => {
+            const config = vscode.workspace.getConfiguration();
+            const inspected = config.inspect<string>(COMPLETION_MODE_SETTING);
+
+            const globalVal = inspected?.globalValue;
+            const workspaceVal = inspected?.workspaceValue;
+            const globalDesc = globalVal ? `当前: ${globalVal}` : '未设置';
+            const workspaceDesc = workspaceVal ? `当前: ${workspaceVal}` : '未设置';
+
+            interface ClearScopeItem extends vscode.QuickPickItem {
+                target: vscode.ConfigurationTarget;
+            }
+            const items: ClearScopeItem[] = [
+                { label: '工作区 (Workspace)', description: workspaceDesc, target: vscode.ConfigurationTarget.Workspace },
+                { label: '全局 (Global)', description: globalDesc, target: vscode.ConfigurationTarget.Global },
+            ];
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: '选择要清除补全设置的范围',
+                ignoreFocusOut: true,
+            });
+            if (!selected) { return; }
+
+            const scopeVal = selected.target === vscode.ConfigurationTarget.Global ? globalVal : workspaceVal;
+            if (!scopeVal) {
+                vscode.window.showInformationMessage(`${scopeLabel(selected.target)} 未设置补全，无需清除`);
+                return;
+            }
+
+            // 清除指定作用域的 miniworld.completion，设置变化会触发 ensureCompletionDeclarations
+            await config.update(COMPLETION_MODE_SETTING, undefined, selected.target);
+            vscode.window.showInformationMessage(`已清除 ${scopeLabel(selected.target)} 的 MiniWorld UGC 补全设置`);
         })
     );
 
-    // 注册命令：添加/移除 3.0 声明
-    disposables.push(
-        vscode.commands.registerCommand('complete.addDeclarations30', async () => {
-            const typesDir = getTypesDir30(context);
-            const target = await pickConfigurationTarget(typesDir, 'add');
-            if (target === undefined) { return; }
-            await addDeclarations(typesDir, '3.0', target);
-        })
-    );
-
-    disposables.push(
-        vscode.commands.registerCommand('complete.removeDeclarations30', async () => {
-            const typesDir = getTypesDir30(context);
-            const target = await pickConfigurationTarget(typesDir, 'remove');
-            if (target === undefined) { return; }
-            await removeDeclarations(typesDir, '3.0', target);
-        })
-    );
-
-    // 注册命令：重置声明提示（清除"永不提醒"和冷却期）
-    disposables.push(
-        vscode.commands.registerCommand('complete.resetDeclarationPrompt', async () => {
-            skipForeverCached = false;
-            skipUntilCached = 0;
-            await context.globalState.update(SKIP_FOREVER_KEY, undefined);
-            await context.globalState.update(SKIP_PROMPT_KEY, undefined);
-            vscode.window.showInformationMessage('声明提示已重置，下次打开 Lua 文件时将重新询问');
-        })
-    );
-
-    // 打开 Lua 文件时检查声明状态并提示添加
+    // 打开 Lua 文件时按补全模式自动应用声明（幂等）
     disposables.push(
         vscode.workspace.onDidOpenTextDocument(
-            (doc) => checkDeclarationsOnOpen(doc, context)
+            (doc) => applyCompletionOnOpen(doc, context)
         )
     );
 
